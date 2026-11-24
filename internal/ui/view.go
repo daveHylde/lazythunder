@@ -41,6 +41,9 @@ func (m Model) listHeight() int { return max(1, m.topHeight()-3) }
 
 func (m *Model) layout() {
 	m.preview.Width, m.preview.Height = m.w-2, m.bottomHeight()-3
+	if m.sidebarOn() {
+		m.preview.Width = maxTextWidth // the sidebar takes the rest
+	}
 	m.agentVP.Width, m.agentVP.Height = m.w-2, m.bottomHeight()-3
 	m.attVP.Width, m.attVP.Height = m.w-2, m.bottomHeight()-3
 	if len(m.chat) > 0 {
@@ -208,11 +211,12 @@ func (m Model) viewDetail(w, h int) string {
 	title := "[2] Preview"
 	if m.full != nil {
 		title = "[2] " + m.full.Subject
-		if pct := m.preview.ScrollPercent(); m.preview.TotalLineCount() > m.preview.Height {
-			title += fmt.Sprintf(" · %d%%", int(pct*100))
-		}
 	}
-	return panel(title, m.withSixel(strings.Split(m.preview.View(), "\n")), w, h, focused)
+	left := m.withSixel(strings.Split(m.preview.View(), "\n"))
+	if m.sidebarOn() && m.full != nil {
+		left = m.composeDetail(left, m.preview.Width)
+	}
+	return panel(title, left, w, h, focused)
 }
 
 // visibleSixels lists the on-screen part of every inline image in the preview.
@@ -400,6 +404,7 @@ const helpText = `lazythunder — keys
 
  navigation    tab, 1 2, enter / h             switch between list and message
                l                               folder picker
+               b                               toggle the sidebar (summary, actions, links, attachments)
                j k, g G, ctrl+d ctrl+u         move / scroll (space pages the email)
                enter                           read message (resting 1s on it marks it read)
                u                               toggle unread-only
@@ -417,7 +422,8 @@ const helpText = `lazythunder — keys
 
  borealis2     a  ask the agent (it can search, read, and act with your y/n)
                s  summarize selected message/thread
-               w  draft a reply with AI      p  back to the email
+               w  AI reply from a short intent (follows ~/.config/lazythunder/reply-guide.md)
+               p  back to the email
                ctrl+l  new conversation      esc  cancel a running request
 
  drafts        e edit in $EDITOR · enter save to Drafts · S send · x discard

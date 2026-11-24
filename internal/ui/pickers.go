@@ -108,7 +108,7 @@ func (m Model) openAttachmentPicker() (tea.Model, tea.Cmd) {
 	}
 	p := &picker{kind: "attachments", msgID: m.full.ID}
 	for _, a := range m.full.Parts.Attachments {
-		p.items = append(p.items, pickItem{title: render.Sanitize(a.Name), detail: fmt.Sprintf("%s · %s", a.ContentType, humanSize(a.Size)), att: a})
+		p.items = append(p.items, pickItem{title: oneLine(a.Name), detail: fmt.Sprintf("%s · %s", oneLine(a.ContentType), humanSize(a.Size)), att: a})
 	}
 	m.picker, m.mode = p, mPicker
 	return m, nil
@@ -172,6 +172,10 @@ func (m Model) keyPicker(s string) (tea.Model, tea.Cmd) {
 	c, ctx, store, id, a := m.c, m.ctx, m.images, p.msgID, it.att
 	switch s {
 	case "enter", "l", "right":
+		if kind, why := classify(a.Name, a.ContentType); kind == attRisky {
+			m.err = fmt.Sprintf("⚠ %s is %s: no preview (d downloads, o opens after a warning)", it.title, why)
+			return m, nil
+		}
 		m.status = "loading " + it.title + "…"
 		return m, func() tea.Msg {
 			r := previewAttachment(ctx, c, store, id, a)
@@ -185,15 +189,30 @@ func (m Model) keyPicker(s string) (tea.Model, tea.Cmd) {
 			return noteMsg{"saved " + dst, err}
 		}
 	case "o":
-		m.status = "opening " + it.title + "…"
-		return m, func() tea.Msg {
+		open := func() tea.Msg {
 			// a persistent dir: the external app may read the file after we exit
 			dst, err := openCopy(ctx, c, store, id, a)
 			if err == nil {
+				// a file that claims to be harmless but is an executable/script is disguised malware: never open
+				if why := sniffRisky(dst); why != "" && classifyKind(a) != attRisky {
+					return noteMsg{err: fmt.Errorf("⚠ %s is really %s despite its name: not opened", it.title, why)}
+				}
 				err = openExternal(dst)
 			}
 			return noteMsg{"opened " + filepath.Base(dst), err}
 		}
+		switch kind, why := classify(a.Name, a.ContentType); kind {
+		case attRisky:
+			m.confirm = &confirmation{text: fmt.Sprintf("⚠ %s is %s and could harm your computer. Open it anyway?", it.title, why), onYes: open}
+			m.mode = mConfirm
+			return m, nil
+		case attOther: // unknown type: the default app might do anything with it
+			m.confirm = &confirmation{text: fmt.Sprintf("%s is an unrecognised file type. Open it with the default app?", it.title), onYes: open}
+			m.mode = mConfirm
+			return m, nil
+		}
+		m.status = "opening " + it.title + "…"
+		return m, open
 	}
 	return m, nil
 }
@@ -297,20 +316,21 @@ func previewAttachment(ctx context.Context, c *tb.Client, store *imageStore, id 
 	if err != nil {
 		return attPreviewMsg{err: err}
 	}
-	title := render.Sanitize(a.Name)
+	if why := sniffRisky(path); why != "" {
+		return attPreviewMsg{err: fmt.Errorf("⚠ %s is really %s: not previewed", oneLine(a.Name), why)}
+	}
+	title := oneLine(a.Name)
 	ct := strings.ToLower(a.ContentType)
 	ext := strings.ToLower(filepath.Ext(a.Name))
 	switch {
 	case strings.HasPrefix(ct, "image/"):
 		return attPreviewMsg{title: title, image: path}
 	case ct == "application/pdf" || ext == ".pdf":
-		ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
-		defer cancel()
-		out, err := exec.CommandContext(ctx, "pdftotext", "-layout", "-enc", "UTF-8", path, "-").Output()
+		out, err := pdfText(ctx, path, 50)
 		if err != nil {
-			return attPreviewMsg{err: fmt.Errorf("pdftotext: %w", err)}
+			return attPreviewMsg{err: err}
 		}
-		return attPreviewMsg{title: title, text: string(out[:min(len(out), maxPreviewBytes)])}
+		return attPreviewMsg{title: title, text: out}
 	case isTextual(ct, ext):
 		f, err := os.Open(path)
 		if err != nil {
@@ -323,7 +343,7 @@ func previewAttachment(ctx context.Context, c *tb.Client, store *imageStore, id 
 		}
 		return attPreviewMsg{title: title, text: string(b)}
 	}
-	return attPreviewMsg{err: fmt.Errorf("no preview for %s: o opens it, d downloads it", a.ContentType)}
+	return attPreviewMsg{err: fmt.Errorf("no preview for %s: o opens it, d downloads it", oneLine(a.ContentType))}
 }
 
 var textExts = map[string]bool{".txt": true, ".md": true, ".csv": true, ".json": true, ".xml": true, ".log": true,

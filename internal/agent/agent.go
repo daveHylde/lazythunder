@@ -68,8 +68,12 @@ Current view: %s
 Use tools to look things up; never invent message contents or ids. Message ids are integers.
 Mutating tools (mark, move, archive, delete) ask the user for confirmation; if declined, accept it.
 To write an email or reply, call propose_draft: the user reviews and edits it before anything is saved or sent.
-Write drafts in the language of the conversation being answered. Sign with the user's name.
-Answer briefly and plainly; plain text, no markdown tables.`
+Before writing a reply, read the message (and its thread if it is part of one) so the reply fits.
+Follow the reply guide below exactly when writing any email.
+Answer briefly and plainly; plain text, no markdown tables.
+
+Reply guide:
+%s`
 
 // Ask runs one user turn to completion and returns the assistant's final text.
 // viewCtx describes what the user is looking at (folder, selected message).
@@ -88,7 +92,7 @@ func (a *Agent) Ask(ctx context.Context, user, viewCtx string, h Hooks) (string,
 		a.accounts = b.String()
 	}
 	// The system prompt is rebuilt each turn so the view context stays current.
-	sys := Msg{Role: "system", Content: fmt.Sprintf(systemPrompt, time.Now().Format("Monday 2006-01-02 15:04"), a.accounts, viewCtx)}
+	sys := Msg{Role: "system", Content: fmt.Sprintf(systemPrompt, time.Now().Format("Monday 2006-01-02 15:04"), a.accounts, viewCtx, ReplyGuide())}
 	if len(a.History) == 0 {
 		a.History = []Msg{sys}
 	}

@@ -7,8 +7,9 @@ local [llama.cpp](https://github.com/ggml-org/llama.cpp) mail assistant.
 ```
  1 All inboxes (577) │ 2 me@gmail.com (457) │ 3 work@company.no …   ← alt+1..9
 [1] Messages                                   (● unread ★ flagged ↩ replied → forwarded)
-[2] Email: your reply above it, then rendered HTML with images
-    (or borealis2 / draft / link, folder, attachment pickers)
+[2] Email (75 cols): your reply above it, then rendered HTML with images │ sidebar: ✦ AI summary,
+    (or borealis2 / draft / link, folder, attachment pickers)             │ action items, links,
+                                                                          │ attachments + safe preview
 ```
 
 ## Requirements
@@ -46,6 +47,12 @@ mark, move, archive or delete. It never sends: drafts it writes open in the
 draft screen for you to review.
 
 ## Notes
+
+- Sidebar (`b` toggles; it needs 30 free columns beside the text):
+  - **Summary:** borealis2 writes a one-line summary and up to 3 action items for each new inbox message, in a background queue (one at a time, paused while you chat with the agent). Summaries are cached in `~/.cache/lazythunder/summaries.json`. Resting 1s on any message summarizes it next.
+  - **Attachments:** the first image, PDF or text attachment is previewed automatically and safely. Images are decoded in Go. PDFs are read by `pdftotext` inside `bwrap`, with no network, read-only `/usr`, no home directory and only that one file visible. Nothing is ever run or opened by itself.
+  - **Risky attachments:** executables, scripts, shortcuts, archives, macro Office files and HTML/SVG are flagged ⚠ (by any extension, so `invoice.pdf.exe` counts) and never previewed. Opening one asks for confirmation. A file whose content is an executable or script while its name says otherwise is never opened.
+- Replies written by borealis2 (`w` asks what to say in a few words) follow `~/.config/lazythunder/reply-guide.md`, created on first use: Norwegian or English to match the email, polite, to the point, no fluff, with a greeting/sign-off template. Edit it to taste.
 
 - Replies: a message shows ↩ if you sent a later message with the same subject (Re: or none) to its sender, and → if you forwarded it. The match uses Sent folders and subjects, so generic subjects can misfire. When you open a replied message, your reply is shown above it, dimmed, with the quoted history removed.
 - Images are shown complete at natural size, fit to the pane. In sixel terminals that report their cell size (foot, wezterm), fully visible images are drawn sharp in the preview; partly scrolled ones fall back to half-blocks, as do kitty/ghostty/alacritty. Embedded (`cid:`) images and remote `http(s)` images are both loaded automatically, which tells senders when you open their mail. Tracking pixels (≤2px) are skipped. Press `i` for the full-resolution viewer: kitty graphics in kitty/ghostty, sixel elsewhere (foot, wezterm). Set `LAZYTHUNDER_GRAPHICS=kitty|sixel` to override.

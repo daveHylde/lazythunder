@@ -125,6 +125,8 @@ type Message struct {
 	Folder     FolderRef `json:"folder"`
 	Recipients []string  `json:"recipients"`
 	CcList     []string  `json:"ccList"`
+	// HeaderMessageID is the RFC Message-ID: stable across folders, so caches key on it.
+	HeaderMessageID string `json:"headerMessageId"`
 }
 
 type Attachment struct {

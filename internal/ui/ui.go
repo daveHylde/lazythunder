@@ -76,6 +76,10 @@ type Model struct {
 	preview    viewport.Model
 	full       *tb.FullMessage
 	images     *imageStore
+	sum        *summarizer
+	sidebar    bool // b toggles the message sidebar (summary, actions, links, attachments)
+	attPrev    *attPreview
+	attCancel  context.CancelFunc
 	cellW      int // terminal cell size in px (0 if unknown)
 	cellH      int
 	placements []render.Placement // inline images in the preview, for sixel overlay
@@ -100,15 +104,16 @@ type Model struct {
 	agentState string
 	agentStop  context.CancelFunc
 
-	input      textinput.Model
-	inputFor   string // "search" or "agent"
-	confirm    *confirmation
-	draft      *tb.Draft
-	draftCtx   string
-	draftFile  string    // edited file kept after a parse error so the text isn't lost
-	submitting bool      // a save/send is in flight
-	pending    *tb.Draft // agent draft waiting for the current draft to finish
-	moveIDs    []int     // messages the move picker will move
+	input       textinput.Model
+	replyTarget int    // message id the w prompt is about
+	inputFor    string // "search" or "agent"
+	confirm     *confirmation
+	draft       *tb.Draft
+	draftCtx    string
+	draftFile   string    // edited file kept after a parse error so the text isn't lost
+	submitting  bool      // a save/send is in flight
+	pending     *tb.Draft // agent draft waiting for the current draft to finish
+	moveIDs     []int     // messages the move picker will move
 }
 
 // listView is what the message list shows: one or more folders, or a search.
@@ -181,9 +186,12 @@ func Run(c *tb.Client, ag *agent.Agent) error {
 	ti.Prompt = "> "
 	m := Model{c: c, ag: ag, ctx: context.Background(), input: ti, accounts: map[string]tb.Account{},
 		preview: newViewport(), agentVP: newViewport(), attVP: newViewport(), status: "connecting to Thunderbird…",
-		images: newImageStore(), replied: map[int]replyInfo{}}
+		images: newImageStore(), replied: map[int]replyInfo{}, sum: newSummarizer(ag, c), sidebar: true}
 	defer m.images.close()
 	prog = tea.NewProgram(m, tea.WithAltScreen())
+	ctx, stop := context.WithCancel(context.Background())
+	defer stop()
+	go m.sum.run(ctx, func(hdr string) { prog.Send(summaryMsg{hdr}) })
 	_, err := prog.Run()
 	return err
 }
@@ -315,7 +323,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		if m.view.title == "" { // first load
-			return m.openTab(0)
+			mm, cmd := m.openTab(0)
+			return mm, tea.Batch(cmd, mm.(Model).pollNewMail())
 		}
 		m.tab = min(m.tab, len(m.acctOrder))
 		return m, nil
@@ -365,7 +374,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	case readTick:
 		x, ok := m.selected()
-		if msg.seq != m.previewSeq || !ok || x.ID != msg.id || x.Read {
+		if msg.seq != m.previewSeq || !ok || x.ID != msg.id {
+			return m, nil
+		}
+		m.sum.enqueue(x.ID, x.HeaderMessageID, true) // resting on it: summarize this one next
+		if x.Read {
 			return m, nil
 		}
 		m.msgs[m.mcur].Read = true
@@ -382,7 +395,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.full = &msg.m
 		cmd := m.refreshPreview(true)
 		reply := m.maybeLoadReply()
-		return m, tea.Batch(cmd, reply)
+		att := m.startAttPreview(msg.m)
+		return m, tea.Batch(cmd, reply, att)
+	case sidebarAttMsg:
+		if m.full == nil || m.full.ID != msg.p.msgID {
+			return m, nil
+		}
+		p := msg.p
+		m.attPrev = &p
+		if m.sidebarOn() && m.inlineSixel() {
+			if _, thumb := m.sidebarLines(m.sidebarWidth(), m.preview.Height); thumb != nil {
+				return m, encodeSixels(m.images, []sixelReq{*thumb}, m.cellW, m.cellH)
+			}
+		}
+		return m, nil
 	case replyStatusMsg:
 		if msg.gen != m.viewGen {
 			return m, nil
@@ -402,6 +428,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.reply = &loadedReply{forID: msg.forID, msg: msg.msg}
 		cmd := m.refreshPreview(false)
 		return m, cmd
+	case summaryMsg:
+		return m, nil // the sidebar reads the summarizer on render
+	case pollTick:
+		return m, m.pollNewMail()
+	case newMailMsg:
+		if msg.n > 0 {
+			m.status = fmt.Sprintf("%d new message(s) · ctrl+r to refresh", msg.n)
+			return m, tea.Batch(m.loadFolders(), nextPoll())
+		}
+		return m, nextPoll()
 	case sixelMsg:
 		if msg.failed {
 			cmd := m.refreshPreview(false) // draw the failed ones as half-blocks
@@ -475,6 +511,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case agentReplyMsg:
 		m.agentBusy, m.agentState = false, ""
+		m.sum.paused.Store(false)
 		if m.confirm != nil && m.confirm.reply != nil { // agent ended (e.g. cancelled) while asking
 			m.confirm, m.mode = nil, m.modeAfterConfirm()
 		}
@@ -535,7 +572,13 @@ func (m *Model) refreshPreview(top bool) tea.Cmd {
 	}
 	var cmds []tea.Cmd
 	if m.inlineSixel() {
-		cmds = append(cmds, encodeSixels(m.images, m.visibleSixels(), m.cellW, m.cellH))
+		reqs := m.visibleSixels()
+		if m.sidebarOn() {
+			if _, thumb := m.sidebarLines(m.sidebarWidth(), m.preview.Height); thumb != nil {
+				reqs = append(reqs, *thumb) // resize/toggle changes its size: re-encode
+			}
+		}
+		cmds = append(cmds, encodeSixels(m.images, reqs, m.cellW, m.cellH))
 	}
 	if len(misses) > 0 {
 		cmds = append(cmds, fetchImages(m.ctx, m.c, m.images, m.full.ID, misses))
@@ -690,6 +733,14 @@ func (m Model) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "l":
 		return m.openFolderPicker()
+	case "b":
+		m.sidebar = !m.sidebar
+		m.layout()
+		cmd := m.refreshPreview(false)
+		if !m.sidebarOn() && m.sidebar {
+			m.status = "sidebar needs a wider terminal"
+		}
+		return m, cmd
 	case "alt+1", "alt+2", "alt+3", "alt+4", "alt+5", "alt+6", "alt+7", "alt+8", "alt+9":
 		return m.openTab(int(s[4] - '1'))
 	case "[", "]":
@@ -861,13 +912,14 @@ func (m Model) keyMessageActions(s string, passthrough tea.Cmd) (tea.Model, tea.
 	case "s":
 		return m.askAgent(fmt.Sprintf("Summarize message id %d. If it is part of a thread, read the thread first and summarize the whole conversation. Then list any action items for me.", x.ID))
 	case "w":
-		return m.startInput("agent", "how should borealis2 reply?", fmt.Sprintf("Draft a reply to message id %d: ", x.ID))
+		m.replyTarget = x.ID
+		return m.startInput("reply", "what should the reply say? (short, e.g. \"yes, friday works\")", "")
 	}
 	return m, passthrough
 }
 
 func (m Model) startInput(purpose, placeholder, value string) (tea.Model, tea.Cmd) {
-	if purpose == "agent" && m.agentBusy {
+	if (purpose == "agent" || purpose == "reply") && m.agentBusy {
 		m.status = "borealis2 is busy (esc to cancel)"
 		return m, nil
 	}
@@ -898,6 +950,11 @@ func (m Model) keyInput(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.focus = pMessages
 			return m.show(listView{title: fmt.Sprintf("Search: %s · last %s (esc to go back)", v, tb.SearchWindow), query: v})
 		}
+		if m.inputFor == "reply" {
+			return m.askAgent(fmt.Sprintf("Write a reply to message id %d. What I want to say, in short: %s\n"+
+				"Read the message first (and the thread if there is one), then call propose_draft with kind \"reply\", "+
+				"message_id %d and the finished body, following the reply guide.", m.replyTarget, v, m.replyTarget))
+		}
 		return m.askAgent(v)
 	}
 	var cmd tea.Cmd
@@ -911,6 +968,7 @@ func (m Model) askAgent(q string) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	m.showAgent, m.agentBusy = true, true
+	m.sum.paused.Store(true) // one model slot: the chat goes first
 	m.say("you: " + q)
 	ctx, cancel := context.WithCancel(m.ctx)
 	m.agentStop = cancel
@@ -970,8 +1028,11 @@ func (m Model) keyConfirm(s string) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) modeAfterConfirm() mode {
-	if m.draft != nil {
+	switch {
+	case m.draft != nil:
 		return mDraft // confirmations raised from the draft screen return to it
+	case m.picker != nil:
+		return mPicker
 	}
 	return mNormal
 }

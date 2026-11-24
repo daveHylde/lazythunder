@@ -385,3 +385,30 @@ func (v viewerCmd) Run() error        { return termimg.View(v.files) }
 func (viewerCmd) SetStdin(io.Reader)  {}
 func (viewerCmd) SetStdout(io.Writer) {}
 func (viewerCmd) SetStderr(io.Writer) {}
+
+// register decodes a local image file (with the bomb guard) under key, for
+// attachment thumbnails that don't come from the HTML.
+func (s *imageStore) register(key, path string) error {
+	if s == nil {
+		return fmt.Errorf("images disabled")
+	}
+	img, err := decode(path, cacheWidth)
+	s.put(key, path, img, err)
+	return err
+}
+
+// registered returns a registered image and its placement token.
+func (s *imageStore) registered(key string) (image.Image, string) {
+	if s == nil {
+		return nil, ""
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	img := s.imgs[key]
+	if img == nil {
+		return nil, ""
+	}
+	t := hash(key)
+	s.keyOf[t] = key
+	return img, t
+}
