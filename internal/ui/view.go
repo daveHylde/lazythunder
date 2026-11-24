@@ -25,12 +25,13 @@ var (
 	flagSt    = lipgloss.NewStyle().Foreground(lipgloss.Color("3"))
 	confirmSt = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("3"))
 	tabOn     = lipgloss.NewStyle().Bold(true).Reverse(true).Foreground(accent)
+	replySt   = lipgloss.NewStyle().Foreground(lipgloss.Color("6"))
 )
 
-// Layout: tab bar (1 row), folders + messages (top), detail pane (bottom), status (1 row).
-func (m Model) topHeight() int    { return max(8, (m.h-2)*2/5) }
+// Layout: tab bar (1 row), message list (top ~28%), message pane (rest), status (1 row).
+// Folders live in a picker (l), so the message pane gets most of the screen.
+func (m Model) topHeight() int    { return max(7, (m.h-2)*7/25) }
 func (m Model) bottomHeight() int { return max(5, m.h-2-m.topHeight()) }
-func (m Model) folderWidth() int  { return max(20, min(34, m.w/5)) }
 
 // listHeight is the number of rows inside a top panel (minus border and title).
 func (m Model) listHeight() int { return max(1, m.topHeight()-3) }
@@ -38,6 +39,7 @@ func (m Model) listHeight() int { return max(1, m.topHeight()-3) }
 func (m *Model) layout() {
 	m.preview.Width, m.preview.Height = m.w-2, m.bottomHeight()-3
 	m.agentVP.Width, m.agentVP.Height = m.w-2, m.bottomHeight()-3
+	m.attVP.Width, m.attVP.Height = m.w-2, m.bottomHeight()-3
 	if len(m.chat) > 0 {
 		m.agentVP.SetContent(m.renderChat())
 	}
@@ -87,9 +89,7 @@ func (m Model) View() string {
 		box := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(accent).Padding(1, 2).Render(helpText)
 		return lipgloss.Place(m.w, m.h, lipgloss.Center, lipgloss.Center, box)
 	}
-	top := lipgloss.JoinHorizontal(lipgloss.Top,
-		m.viewFolders(m.folderWidth(), m.topHeight()),
-		m.viewMessages(m.w-m.folderWidth(), m.topHeight()))
+	top := m.viewMessages(m.w, m.topHeight())
 	return strings.Join([]string{m.viewTabs(), top, m.viewDetail(m.w, m.bottomHeight()), m.viewBottom()}, "\n")
 }
 
@@ -115,34 +115,6 @@ func (m Model) viewTabs() string {
 	return ansi.Truncate(strings.Join(parts, dim.Render("│")), m.w, "…")
 }
 
-func (m Model) viewFolders(w, h int) string {
-	vis := m.visibleFolders()
-	merged := m.tabAccount() == "" && m.mode != mMovePick // All tab: one inbox per account
-	from, to := window(len(vis), m.fcur, m.listHeight())
-	var lines []string
-	for i := from; i < to; i++ {
-		f := vis[i]
-		t := strings.Repeat(" ", f.Depth-1) + render.Sanitize(f.Name)
-		if merged {
-			t = render.Sanitize(m.accounts[f.AccountID].Name)
-		}
-		if f.Unread > 0 {
-			t = unreadSt.Render(fmt.Sprintf("%s (%d)", t, f.Unread))
-		}
-		if i == m.fcur {
-			t = highlight(t, w-2, m.focus == pFolders)
-		}
-		lines = append(lines, t)
-	}
-	title := "[1] Folders"
-	if m.mode == mMovePick {
-		title = "[1] Move to…"
-	} else if merged {
-		title = "[1] Inboxes"
-	}
-	return panel(title, lines, w, h, m.focus == pFolders)
-}
-
 func shortDate(t time.Time) string {
 	t, now := t.Local(), time.Now()
 	switch {
@@ -162,7 +134,7 @@ func name(addr string) string {
 }
 
 func (m Model) viewMessages(w, h int) string {
-	title := "[2] " + m.view.title
+	title := "[1] " + m.view.title + " · l folders"
 	if m.unread {
 		title += " · unread"
 	}
@@ -177,6 +149,14 @@ func (m Model) viewMessages(w, h int) string {
 		}
 		if x.Flagged {
 			mark = flagSt.Render("★")
+		}
+		switch m.replied[x.ID].kind {
+		case 'r':
+			mark += replySt.Render("↩")
+		case 'f':
+			mark += replySt.Render("→")
+		default:
+			mark += " "
 		}
 		who := ansi.Truncate(render.Sanitize(name(x.Author)), 20, "…")
 		subj := render.Sanitize(x.Subject)
@@ -202,23 +182,63 @@ func (m Model) viewMessages(w, h int) string {
 func (m Model) viewDetail(w, h int) string {
 	focused := m.focus == pDetail
 	if m.draft != nil && (m.mode == mDraft || m.mode == mConfirm) {
-		return panel("[3] "+kindName(m.draft.Kind), m.draftLines(w-2), w, h, true)
+		return panel("[2] "+kindName(m.draft.Kind), m.draftLines(w-2), w, h, true)
+	}
+	if m.mode == mPicker && m.picker != nil {
+		title := fmt.Sprintf("[2] %s (%d) · %s", pickerTitle(m.picker.kind), len(m.picker.items), m.pickerHelp())
+		return panel(title, m.pickerLines(w-2), w, h, true)
+	}
+	if m.mode == mAttView {
+		title := "[2] " + m.attTitle + " · esc back"
+		if m.attVP.TotalLineCount() > m.attVP.Height {
+			title += fmt.Sprintf(" · %d%%", int(m.attVP.ScrollPercent()*100))
+		}
+		return panel(title, strings.Split(m.attVP.View(), "\n"), w, h, true)
 	}
 	if m.showAgent {
-		title := "[3] borealis2 (p: back to email)"
+		title := "[2] borealis2 (p: back to email)"
 		if m.agentBusy {
-			title = "[3] borealis2 · " + m.agentState
+			title = "[2] borealis2 · " + m.agentState
 		}
 		return panel(title, strings.Split(m.agentVP.View(), "\n"), w, h, focused)
 	}
-	title := "[3] Preview"
+	title := "[2] Preview"
 	if m.full != nil {
-		title = "[3] " + m.full.Subject
+		title = "[2] " + m.full.Subject
 		if pct := m.preview.ScrollPercent(); m.preview.TotalLineCount() > m.preview.Height {
 			title += fmt.Sprintf(" · %d%%", int(pct*100))
 		}
 	}
-	return panel(title, strings.Split(m.preview.View(), "\n"), w, h, focused)
+	return panel(title, m.withSixel(strings.Split(m.preview.View(), "\n")), w, h, focused)
+}
+
+// withSixel overlays sharp sixel images on the block-drawn ones that are fully
+// visible. The sequence goes at the end of the image's last row: by the time
+// the terminal gets there, every row of the image has been written, so no
+// later text in this frame erases it, and bubbletea only rewrites rows that
+// change. Partly visible images keep their blocks.
+func (m Model) withSixel(lines []string) []string {
+	if !m.inlineSixel() || m.full == nil {
+		return lines
+	}
+	top, h := m.preview.YOffset, m.preview.Height
+	for _, p := range m.placements {
+		if p.Line < top || p.Line+p.Rows > top+h || p.Line+p.Rows-1-top >= len(lines) {
+			continue
+		}
+		enc := m.images.sixelFor(p, m.cellW, m.cellH)
+		if enc == "" {
+			continue
+		}
+		up := ""
+		if p.Rows > 1 {
+			up = fmt.Sprintf("\x1b[%dA", p.Rows-1)
+		}
+		// column: 1-based, +1 for the panel's left border
+		last := p.Line + p.Rows - 1 - top
+		lines[last] += "\x1b7" + up + fmt.Sprintf("\x1b[%dG", p.Col+2) + enc + "\x1b8"
+	}
+	return lines
 }
 
 func (m Model) draftLines(w int) []string {
@@ -251,10 +271,14 @@ func (m Model) renderChat() string {
 	return strings.Join(parts, "\n\n")
 }
 
-// renderMessage returns the preview text and the image srcs still to fetch.
-func (m Model) renderMessage(x tb.FullMessage) (string, []string) {
+// renderMessage returns the preview text, the image srcs still to fetch and
+// the message's links.
+func (m Model) renderMessage(x tb.FullMessage) (string, []string, []link) {
 	w := m.preview.Width
 	var b strings.Builder
+	if r, ok := m.replied[x.ID]; ok {
+		b.WriteString(m.renderOwnReply(x.ID, r, w))
+	}
 	hdr := func(k, v string) {
 		if v != "" {
 			b.WriteString(ansi.Wrap(dim.Render(k+": ")+render.Sanitize(v), w, "") + "\n")
@@ -269,15 +293,55 @@ func (m Model) renderMessage(x tb.FullMessage) (string, []string) {
 	}
 	b.WriteString(dim.Render(strings.Repeat("─", w)) + "\n")
 	var misses []string
-	image := func(src string) image.Image {
-		img, fetch := m.images.lookup(x.ID, src)
+	image := func(src string) (image.Image, string) {
+		img, fetch, token := m.images.lookup(x.ID, src)
 		if fetch {
 			misses = append(misses, src)
 		}
-		return img
+		return img, token
 	}
-	b.WriteString(render.Body(x.Parts.Text, x.Parts.HTML, render.Opts{Width: w, Styled: true, Links: true, PreferHTML: true, Image: image}))
-	return b.String(), misses
+	var links []link
+	seen := map[string]bool{}
+	onLink := func(u, label string) {
+		if !seen[u] {
+			seen[u] = true
+			links = append(links, link{url: u, label: label})
+		}
+	}
+	cw, ch := m.cellW, m.cellH
+	if cw <= 0 || ch <= 0 {
+		cw, ch = 8, 16
+	}
+	b.WriteString(render.Body(x.Parts.Text, x.Parts.HTML, render.Opts{Width: w, Styled: true, Links: true, PreferHTML: true,
+		Image: image, CellW: cw, CellH: ch, ImageRows: max(3, m.preview.Height-1), OnLink: onLink}))
+	return b.String(), misses, links
+}
+
+// renderOwnReply is the user's earlier reply (or a forward note), dimmed
+// behind a ┃ gutter, separated from the message it answers.
+func (m Model) renderOwnReply(id int, r replyInfo, w int) string {
+	var b strings.Builder
+	gutter := replySt.Render("┃ ")
+	line := func(s string) { b.WriteString(gutter + dim.Render(s) + "\n") }
+	verb := "↩ You replied"
+	if r.kind == 'f' {
+		verb = "→ You forwarded this"
+	}
+	line(fmt.Sprintf("%s · %s · to %s", verb, r.date.Local().Format("Mon 02 Jan 15:04"), render.Sanitize(name(r.to))))
+	if r.kind == 'r' {
+		if m.reply != nil && m.reply.forID == id {
+			body := render.Body(m.reply.msg.Parts.Text, m.reply.msg.Parts.HTML, render.Opts{Width: w - 2, StripQuotes: true})
+			for _, l := range strings.Split(body, "\n") {
+				line(l)
+			}
+		} else {
+			line("loading…")
+		}
+	}
+	label := " original message "
+	side := max(2, (w-ansi.StringWidth(label))/2)
+	b.WriteString(dim.Render(strings.Repeat("─", side)+label+strings.Repeat("─", max(0, w-side-ansi.StringWidth(label)))) + "\n")
+	return b.String()
 }
 
 func (m Model) viewBottom() string {
@@ -295,12 +359,12 @@ func (m Model) viewBottom() string {
 	switch {
 	case !m.ready:
 		hint = "ctrl+r retry · q quit"
-	case m.mode == mMovePick:
-		hint = "enter move here · esc cancel"
-	case m.focus == pFolders:
-		hint = "enter open · alt+1-9 tabs · / search · a agent · c compose · ? help"
+	case m.mode == mPicker && m.picker != nil:
+		hint = m.pickerHelp()
+	case m.mode == mAttView:
+		hint = "j/k scroll · esc back"
 	default:
-		hint = "r reply · e archive · d delete · s summarize · w AI reply · a agent · ? help"
+		hint = "l folders · r reply · o links · A attachments · i images · e archive · d delete · a agent · ? help"
 	}
 	gap := m.w - ansi.StringWidth(left) - ansi.StringWidth(hint)
 	if gap < 1 { // never let the status line wrap: that scrolls the whole screen
@@ -313,9 +377,10 @@ const helpText = `lazythunder — keys
 
  tabs          alt+1 all inboxes · alt+2..9 accounts · [ ] previous/next
 
- navigation    tab / shift+tab, 1 2 3, h l     switch panel
+ navigation    tab, 1 2, enter / h             switch between list and message
+               l                               folder picker
                j k, g G, ctrl+d ctrl+u         move / scroll (space pages the email)
-               enter                           open folder / read message (marks read)
+               enter                           read message (resting 1s on it marks it read)
                u                               toggle unread-only
                /                               search all accounts (esc returns)
                ctrl+r                          refresh
@@ -325,6 +390,9 @@ const helpText = `lazythunder — keys
                M  move to folder   c  compose new
                r  reply   R  reply all   f  forward
                i  view the message's images full screen (sixel/kitty)
+               o  link picker (enter open, y copy)
+               A  attachments (enter preview, d download, o open)
+               list: ● unread  ★ flagged  ↩ you replied  → you forwarded
 
  borealis2     a  ask the agent (it can search, read, and act with your y/n)
                s  summarize selected message/thread

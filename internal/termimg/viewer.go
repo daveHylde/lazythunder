@@ -133,3 +133,28 @@ func decodeFile(path string) (image.Image, error) {
 	img, _, err := image.Decode(f)
 	return img, err
 }
+
+// SixelCells encodes img to exactly fill cols×rows terminal cells of
+// cellW×cellH px (height rounded down to a sixel band of 6 px, so it never
+// spills into the row below). Transparent pixels keep the text underneath.
+func SixelCells(img image.Image, cols, rows, cellW, cellH int) string {
+	w, h := cols*cellW, rows*cellH/6*6
+	if w <= 0 || h <= 0 {
+		return ""
+	}
+	// keep the image's aspect inside the cell box; the rest stays transparent
+	iw, ih := img.Bounds().Dx(), img.Bounds().Dy()
+	fw, fh := w, ih*w/max(1, iw)
+	if fh > h {
+		fw, fh = iw*h/max(1, ih), h
+	}
+	dst := image.NewNRGBA(image.Rect(0, 0, w, h))
+	xdraw.CatmullRom.Scale(dst, image.Rect(0, 0, max(1, fw), max(1, fh)), img, img.Bounds(), xdraw.Src, nil)
+	var b bytes.Buffer
+	enc := sixel.NewEncoder(&b)
+	enc.Transparent = true
+	if enc.Encode(dst) != nil {
+		return ""
+	}
+	return b.String()
+}

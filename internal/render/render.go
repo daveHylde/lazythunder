@@ -22,9 +22,15 @@ type Opts struct {
 	Styled     bool // ANSI bold/italic/underline/colour
 	Links      bool // number links as [n] and list the URLs at the end
 	PreferHTML bool // render the HTML part even when a text part exists
-	// Image returns a loaded image for an <img> src, or nil to fall back to [alt].
-	Image     func(src string) image.Image
-	ImageRows int // max rows per inline image (default 12)
+	// Image returns a loaded image for an <img> src, or nil to fall back to
+	// [alt]. A non-empty token marks the image's first row (see Placements).
+	Image        func(src string) (image.Image, string)
+	ImageRows    int // max rows per inline image (default 12)
+	CellW, CellH int // terminal cell size in px, for natural image sizing (default 6×12)
+	// OnLink is called for every http(s)/mailto link, in document order.
+	OnLink func(url, label string)
+	// StripQuotes drops quoted history (for showing just what a reply added).
+	StripQuotes bool
 }
 
 // Body picks the best part of a message and renders it.
@@ -35,7 +41,90 @@ func Body(text, htmlPart string, o Opts) string {
 	case LooksLikeHTML(text): // some senders put HTML in the text/plain part
 		return HTML(text, o)
 	}
+	if o.StripQuotes {
+		text = stripTextQuotes(text)
+	}
+	if o.OnLink != nil {
+		for _, u := range reURL.FindAllString(Sanitize(text), -1) {
+			o.OnLink(strings.TrimRight(u, ".,;:!?"), "")
+		}
+	}
 	return Text(text, o.Width)
+}
+
+var (
+	reURL      = regexp.MustCompile(`https?://(?:[^\s<>"'()\[\]]|\([^\s<>"'()]*\))+`) // balanced (…) as in Wikipedia URLs
+	reQuoteCut = regexp.MustCompile(`(?im)^(-{3,}\s*(original message|opprinnelig melding|forwarded message|videresendt melding)|_{10,}\s*\n\s*(from|fra): .*\n(sent|date|sendt|dato): |(from|fra): .*\n(sent|sendt): )`)
+)
+
+// stripTextQuotes keeps what a plain-text reply added: drops "> " lines, the
+// "... wrote:" line introducing them, and everything after an Outlook-style
+// "Original Message" separator.
+func stripTextQuotes(s string) string {
+	s = strings.ReplaceAll(s, "\r\n", "\n")
+	if loc := reQuoteCut.FindStringIndex(s); loc != nil {
+		s = s[:loc[0]]
+	}
+	lines := strings.Split(s, "\n")
+	var out []string
+	for i, l := range lines {
+		if strings.HasPrefix(strings.TrimSpace(l), ">") {
+			continue
+		}
+		next := ""
+		for _, n := range lines[i+1:] {
+			if strings.TrimSpace(n) != "" {
+				next = n
+				break
+			}
+		}
+		if strings.HasSuffix(strings.TrimSpace(l), ":") && strings.HasPrefix(strings.TrimSpace(next), ">") {
+			continue // attribution line
+		}
+		out = append(out, l)
+	}
+	return strings.Join(out, "\n")
+}
+
+// Image placement markers: an APC sequence (zero width, never shown) at the
+// start of an image's first row tells the UI where to draw sharp graphics.
+const markerPrefix, markerEnd = "\x1b_lt;", "\x1b\\"
+
+// Placement is an inline image's position in rendered text, in cells.
+type Placement struct {
+	Token      string
+	Line, Col  int
+	Cols, Rows int
+}
+
+// Placements strips image markers from rendered text and reports where they were.
+func Placements(s string) (string, []Placement) {
+	if !strings.Contains(s, markerPrefix) {
+		return s, nil
+	}
+	lines := strings.Split(s, "\n")
+	var ps []Placement
+	for i, l := range lines {
+		for {
+			a := strings.Index(l, markerPrefix)
+			if a < 0 {
+				break
+			}
+			b := strings.Index(l[a:], markerEnd)
+			if b < 0 {
+				break
+			}
+			f := strings.Split(l[a+len(markerPrefix):a+b], ";")
+			if len(f) == 3 {
+				cols, _ := strconv.Atoi(f[1])
+				rows, _ := strconv.Atoi(f[2])
+				ps = append(ps, Placement{Token: f[0], Line: i, Col: ansi.StringWidth(l[:a]), Cols: cols, Rows: rows})
+			}
+			l = l[:a] + l[a+b+len(markerEnd):]
+		}
+		lines[i] = l
+	}
+	return strings.Join(lines, "\n"), ps
 }
 
 var reTag = regexp.MustCompile(`(?i)<(br|p|div|table|td|span|b|a|font|html|body)\b[^>]*>`)
@@ -112,13 +201,29 @@ const (
 )
 
 type renderer struct {
-	o     Opts
-	links *[]string
-	out   []string        // finished, wrapped lines
-	line  strings.Builder // inline content not yet wrapped
-	tail  rune            // last visible rune in line; 0 at line start
-	pre   int
-	depth int
+	o       Opts
+	links   *[]string
+	out     []string        // finished, wrapped lines
+	line    strings.Builder // inline content not yet wrapped
+	tail    rune            // last visible rune in line; 0 at line start
+	pre     int
+	depth   int
+	stopped bool // StripQuotes reached the quoted part
+}
+
+// isQuote spots quoted reply history from Thunderbird, Gmail, Apple Mail and Outlook.
+func isQuote(n *html.Node) bool {
+	if n.DataAtom == atom.Blockquote && strings.EqualFold(attr(n, "type"), "cite") {
+		return true
+	}
+	class := " " + attr(n, "class") + " "
+	for _, c := range []string{" moz-cite-prefix ", " gmail_quote ", " gmail_attr ", " gmail_quote_container ", " yahoo_quoted "} {
+		if strings.Contains(class, c) {
+			return true
+		}
+	}
+	id := attr(n, "id")
+	return id == "divRplyFwdMsg" || id == "appendonsend"
 }
 
 // HTML renders an HTML document or fragment.
@@ -131,6 +236,9 @@ func HTML(src string, o Opts) string {
 	r := &renderer{o: o, links: &links}
 	r.walk(doc)
 	body := tidy(r.finish())
+	if o.StripQuotes { // the separator rule before a stripped quote
+		body = strings.TrimRight(strings.TrimRight(body, "─"), "\n")
+	}
 	if o.Links && len(links) > 0 {
 		var b strings.Builder
 		for i, l := range links {
@@ -265,6 +373,7 @@ func (r *renderer) sub(n *html.Node, indent int) []string {
 	for c := n.FirstChild; c != nil; c = c.NextSibling {
 		s.walk(c)
 	}
+	r.stopped = r.stopped || s.stopped
 	return strings.Split(tidy(s.finish()), "\n")
 }
 
@@ -332,7 +441,13 @@ func (r *renderer) walk(n *html.Node) {
 	default:
 		return // comments (incl. Outlook conditionals), doctype
 	}
-	if hidden(n) {
+	if hidden(n) || r.stopped {
+		return
+	}
+	if r.o.StripQuotes && isQuote(n) {
+		if attr(n, "id") == "divRplyFwdMsg" || attr(n, "id") == "appendonsend" {
+			r.stopped = true // Outlook: everything after this is the quoted original
+		}
 		return
 	}
 	switch n.DataAtom {
@@ -429,9 +544,6 @@ func (r *renderer) walk(n *html.Node) {
 	}
 }
 
-// Inline images are drawn near natural size: one cell ≈ 6×12 px.
-const cellW, cellH = 6, 12
-
 func (r *renderer) img(n *html.Node) {
 	w, _ := strconv.Atoi(strings.TrimSuffix(attr(n, "width"), "px"))
 	h, _ := strconv.Atoi(strings.TrimSuffix(attr(n, "height"), "px"))
@@ -439,7 +551,7 @@ func (r *renderer) img(n *html.Node) {
 		return // tracking pixel
 	}
 	if src := strings.TrimSpace(attr(n, "src")); r.o.Image != nil && src != "" {
-		if img := r.o.Image(src); img != nil {
+		if img, token := r.o.Image(src); img != nil {
 			b := img.Bounds()
 			if b.Dx() <= 2 || b.Dy() <= 2 {
 				return
@@ -454,8 +566,20 @@ func (r *renderer) img(n *html.Node) {
 			if rows <= 0 {
 				rows = 12
 			}
+			cw, ch := r.o.CellW, r.o.CellH
+			if cw <= 0 || ch <= 0 {
+				cw, ch = 6, 12
+			}
+			// natural size: one image pixel per screen pixel, capped to the pane
+			lines := termimg.Blocks(img, min(width, (w+cw-1)/cw), min(rows, (h+ch-1)/ch))
+			if len(lines) == 0 {
+				return
+			}
 			r.flush()
-			r.out = append(r.out, termimg.Blocks(img, min(width, (w+cellW-1)/cellW), min(rows, (h+cellH-1)/cellH))...)
+			if token != "" {
+				lines[0] = fmt.Sprintf("%s%s;%d;%d%s", markerPrefix, token, ansi.StringWidth(lines[0]), len(lines), markerEnd) + lines[0]
+			}
+			r.out = append(r.out, lines...)
 			return
 		}
 	}
@@ -470,6 +594,9 @@ func (r *renderer) link(n *html.Node) {
 	r.children(n)
 	r.sgr(sgrUnderOff)
 	label := textContent(n) // not sliced from r.line: block children flush it
+	if l := strings.ToLower(href); r.o.OnLink != nil && (strings.HasPrefix(l, "http://") || strings.HasPrefix(l, "https://") || strings.HasPrefix(l, "mailto:")) {
+		r.o.OnLink(Sanitize(href), label)
+	}
 	if !r.o.Links || href == "" || strings.HasPrefix(href, "#") || label == "" {
 		return
 	}

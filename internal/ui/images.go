@@ -20,6 +20,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/davidhyldgaard/lazythunder/internal/render"
 	"github.com/davidhyldgaard/lazythunder/internal/tb"
 	"github.com/davidhyldgaard/lazythunder/internal/termimg"
 )
@@ -48,6 +49,8 @@ type imageStore struct {
 	state map[string]imgState
 	order map[int][]string // message id -> keys in document order
 	seen  map[int]map[string]bool
+	keyOf map[string]string // placement token -> key
+	sixel map[string]string // token|cols|rows|cell size -> encoded sixel ("" while encoding)
 }
 
 // newImageStore returns nil (images disabled) if no temp dir can be made.
@@ -57,7 +60,8 @@ func newImageStore() *imageStore {
 		return nil
 	}
 	return &imageStore{dir: dir, imgs: map[string]image.Image{}, paths: map[string]string{},
-		state: map[string]imgState{}, order: map[int][]string{}, seen: map[int]map[string]bool{}}
+		state: map[string]imgState{}, order: map[int][]string{}, seen: map[int]map[string]bool{},
+		keyOf: map[string]string{}, sixel: map[string]string{}}
 }
 
 func (s *imageStore) close() {
@@ -75,10 +79,11 @@ func imgKey(msgID int, src string) string {
 	return "url\x00" + src
 }
 
-// lookup returns a cached image, or nil and whether it still needs fetching.
-func (s *imageStore) lookup(msgID int, src string) (image.Image, bool) {
+// lookup returns a cached image with its placement token, or nil and whether
+// it still needs fetching.
+func (s *imageStore) lookup(msgID int, src string) (image.Image, bool, string) {
 	if s == nil {
-		return nil, false
+		return nil, false, ""
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -88,19 +93,79 @@ func (s *imageStore) lookup(msgID int, src string) (image.Image, bool) {
 	}
 	if !s.seen[msgID][k] {
 		if len(s.order[msgID]) >= maxImagesPerMsg {
-			return nil, false // shortcut: extra images stay as [alt]
+			return nil, false, "" // shortcut: extra images stay as [alt]
 		}
 		s.seen[msgID][k] = true
 		s.order[msgID] = append(s.order[msgID], k)
 	}
 	if img := s.imgs[k]; img != nil {
-		return img, false
+		t := hash(k)
+		s.keyOf[t] = k
+		return img, false, t
 	}
 	if s.state[k] != 0 {
-		return nil, false
+		return nil, false, ""
 	}
 	s.state[k] = imgPending
-	return nil, true
+	return nil, true, ""
+}
+
+func sixelKey(p render.Placement, cw, ch int) string {
+	return fmt.Sprintf("%s|%d|%d|%d|%d", p.Token, p.Cols, p.Rows, cw, ch)
+}
+
+// sixelFor returns the encoded sixel for a placement if it is ready.
+func (s *imageStore) sixelFor(p render.Placement, cw, ch int) string {
+	if s == nil {
+		return ""
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.sixel[sixelKey(p, cw, ch)]
+}
+
+type sixelMsg struct{}
+
+// encodeSixels encodes the placements that have no cached sixel yet.
+func encodeSixels(s *imageStore, ps []render.Placement, cw, ch int) tea.Cmd {
+	if s == nil || len(ps) == 0 {
+		return nil
+	}
+	type job struct {
+		key, path string
+		p         render.Placement
+	}
+	var jobs []job
+	s.mu.Lock()
+	if len(s.sixel) > 64 { // shortcut: crude bound on encoded-image memory; LRU if it matters
+		s.sixel = map[string]string{}
+	}
+	for _, p := range ps {
+		k := sixelKey(p, cw, ch)
+		if _, ok := s.sixel[k]; ok {
+			continue
+		}
+		if path := s.paths[s.keyOf[p.Token]]; path != "" {
+			s.sixel[k] = "" // in progress
+			jobs = append(jobs, job{k, path, p})
+		}
+	}
+	s.mu.Unlock()
+	if len(jobs) == 0 {
+		return nil
+	}
+	return func() tea.Msg {
+		for _, j := range jobs {
+			enc := ""
+			if img, err := decode(j.path, j.p.Cols*cw); err == nil { // full resolution, not the thumbnail
+				enc = termimg.SixelCells(img, j.p.Cols, j.p.Rows, cw, ch)
+			}
+			s.mu.Lock()
+			s.sixel[j.key] = enc
+			s.mu.Unlock()
+		}
+		return sixelMsg{}
+	}
 }
 
 // files are the original image files of a message, in document order.
@@ -194,7 +259,7 @@ func fetchImages(ctx context.Context, c *tb.Client, s *imageStore, msgID int, sr
 				}()
 				var img image.Image
 				if err == nil {
-					img, err = decode(path)
+					img, err = decode(path, cacheWidth)
 				}
 				s.put(k, path, img, err)
 			}()
@@ -258,7 +323,9 @@ func save(path string, r io.Reader) error {
 	return err
 }
 
-func decode(path string) (image.Image, error) {
+// decode reads an image file (guarding against decompression bombs) and
+// shrinks it to at most maxW pixels wide.
+func decode(path string, maxW int) (image.Image, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
@@ -281,7 +348,7 @@ func decode(path string) (image.Image, error) {
 	if err != nil {
 		return nil, err
 	}
-	return termimg.Shrink(img, cacheWidth), nil
+	return termimg.Shrink(img, maxW), nil
 }
 
 func hash(s string) string {

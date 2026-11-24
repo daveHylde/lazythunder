@@ -34,7 +34,7 @@ func bombPNG() []byte {
 func TestDecodeRejectsBomb(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "bomb.png")
 	os.WriteFile(p, bombPNG(), 0o644)
-	if _, err := decode(p); err == nil {
+	if _, err := decode(p, 100); err == nil {
 		t.Fatal("decompression bomb accepted")
 	}
 }

@@ -118,12 +118,12 @@ func TestImages(t *testing.T) {
 		logo.Pix[i] = 255
 	}
 	var asked []string
-	o := Opts{Width: 40, Styled: true, Image: func(src string) image.Image {
+	o := Opts{Width: 40, Styled: true, Image: func(src string) (image.Image, string) {
 		asked = append(asked, src)
 		if src == "cid:logo" {
-			return logo
+			return logo, ""
 		}
-		return nil
+		return nil, ""
 	}}
 	got := HTML(`<p>Hi</p><img src="cid:logo"><img src="https://t.example/p.gif" width="1" height="1" alt="px"><img src="https://x/y.png" alt="Banner">`, o)
 	lines := strings.Split(got, "\n")
@@ -136,6 +136,52 @@ func TestImages(t *testing.T) {
 	}
 }
 
+func TestPlacementMarkers(t *testing.T) {
+	logo := image.NewNRGBA(image.Rect(0, 0, 60, 24))
+	for i := range logo.Pix {
+		logo.Pix[i] = 255
+	}
+	o := Opts{Width: 40, CellW: 6, CellH: 12, Image: func(string) (image.Image, string) { return logo, "tok1" }}
+	got, ps := Placements(HTML(`<p>Hi</p><blockquote><img src="x"></blockquote>`, o))
+	if strings.Contains(got, "\x1b_") {
+		t.Fatalf("marker left in output: %q", got)
+	}
+	want := Placement{Token: "tok1", Line: 2, Col: 2, Cols: 10, Rows: 2}
+	if len(ps) != 1 || ps[0] != want {
+		t.Fatalf("placements %+v, want %+v", ps, want)
+	}
+}
+
+func TestOnLinkCollectsAll(t *testing.T) {
+	var got []string
+	o := Opts{OnLink: func(u, l string) { got = append(got, u+"|"+l) }}
+	HTML(`<a href="https://a.no/x">Se</a> <a href="https://b.no">https://b.no</a> <a href="#top">top</a> <a href="mailto:x@y.no">mail</a>`, o)
+	if strings.Join(got, ",") != "https://a.no/x|Se,https://b.no|https://b.no,mailto:x@y.no|mail" {
+		t.Fatalf("html links: %v", got)
+	}
+	got = nil
+	Body("Les mer: https://c.no/a?b=1. Eller (https://d.no)", "", o)
+	if strings.Join(got, ",") != "https://c.no/a?b=1|,https://d.no|" {
+		t.Fatalf("text links: %v", got)
+	}
+}
+
+func TestStripQuotes(t *testing.T) {
+	o := Opts{StripQuotes: true}
+	html := `<div>Takk, det passer fint.</div><div class="moz-cite-prefix">Den 24.11, skrev Ola:</div><blockquote type="cite">Original tekst</blockquote>`
+	if got := HTML(html, o); got != "Takk, det passer fint." {
+		t.Fatalf("thunderbird: %q", got)
+	}
+	outlook := `<p>Ja!</p><hr><div id="divRplyFwdMsg">From: Ola</div><div>Original</div>`
+	if got := HTML(outlook, o); got != "Ja!" {
+		t.Fatalf("outlook: %q", got)
+	}
+	text := "Hei,\nja.\n\nOn Tue, Ola wrote:\n> old line\n> more\n"
+	if got := Body(text, "", o); got != "Hei,\nja." {
+		t.Fatalf("text: %q", got)
+	}
+}
+
 func TestBodyPicksPart(t *testing.T) {
 	if got := Body("hei\r\n\tder", "<p>html</p>", Opts{}); got != "hei\n der" {
 		t.Fatalf("text part: %q", got)
@@ -145,5 +191,21 @@ func TestBodyPicksPart(t *testing.T) {
 	}
 	if got := Body("<div>a<br>b</div><p>c</p>", "", Opts{}); got != "a\nb\n\nc" {
 		t.Fatalf("html in text part: %q", got)
+	}
+}
+
+func TestTextLinkParensAndQuoteCut(t *testing.T) {
+	var got []string
+	Body("See https://en.wikipedia.org/wiki/Foo_(bar). Or (https://x.no/a).", "", Opts{OnLink: func(u, _ string) { got = append(got, u) }})
+	if strings.Join(got, " ") != "https://en.wikipedia.org/wiki/Foo_(bar) https://x.no/a" {
+		t.Fatalf("links: %v", got)
+	}
+	sig := "Takk!\n__________\nDavid, Jobbi AS\n"
+	if out := Body(sig, "", Opts{StripQuotes: true}); !strings.Contains(out, "Jobbi AS") {
+		t.Fatalf("signature divider cut the reply: %q", out)
+	}
+	outlook := "Ja!\n________________________________\nFrom: Ola\nSent: tirsdag\nold"
+	if out := Body(outlook, "", Opts{StripQuotes: true}); out != "Ja!" {
+		t.Fatalf("outlook quote kept: %q", out)
 	}
 }

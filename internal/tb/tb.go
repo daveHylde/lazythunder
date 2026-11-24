@@ -163,9 +163,9 @@ func (c *Client) Folders(ctx context.Context) (f []Folder, err error) {
 }
 
 type SearchOpts struct {
-	From, Folder, Since, Until string
-	Unread, IncludeJunk        bool
-	Limit                      int
+	From, Folder, Since, Until, Subject string
+	Unread, IncludeJunk                 bool
+	Limit                               int
 }
 
 func (c *Client) Search(ctx context.Context, query string, o SearchOpts) (p Page, err error) {
@@ -178,6 +178,9 @@ func (c *Client) Search(ctx context.Context, query string, o SearchOpts) (p Page
 	}
 	if o.Since != "" {
 		args = append(args, "--since", o.Since)
+	}
+	if o.Subject != "" {
+		args = append(args, "--subject="+o.Subject) // one argv: a subject may start with "-"
 	}
 	if o.Until != "" {
 		args = append(args, "--until", o.Until)

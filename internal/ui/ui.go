@@ -14,26 +14,30 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 
+	"golang.org/x/sys/unix"
+
 	"github.com/davidhyldgaard/lazythunder/internal/agent"
+	"github.com/davidhyldgaard/lazythunder/internal/render"
 	"github.com/davidhyldgaard/lazythunder/internal/tb"
+	"github.com/davidhyldgaard/lazythunder/internal/termimg"
 )
 
 type pane int
 
 const (
-	pFolders pane = iota
-	pMessages
+	pMessages pane = iota
 	pDetail
 )
 
 type mode int
 
 const (
-	mNormal   mode = iota
-	mInput         // text input at the bottom (search or agent prompt)
-	mConfirm       // y/n question
-	mDraft         // reviewing a draft
-	mMovePick      // picking a target folder in the folder pane
+	mNormal  mode = iota
+	mInput        // text input at the bottom (search or agent prompt)
+	mConfirm      // y/n question
+	mDraft        // reviewing a draft
+	mPicker       // link or attachment picker in the detail pane
+	mAttView      // previewing an attachment in the detail pane
 	mHelp
 )
 
@@ -58,7 +62,6 @@ type Model struct {
 	accounts  map[string]tb.Account
 	acctOrder []string // account ids in tab order; tab 0 is "All inboxes"
 	tab       int
-	fcur      int // index into visibleFolders()
 	view      listView
 	prevView  listView // restored when leaving search results
 	unread    bool     // unread-only filter
@@ -72,6 +75,21 @@ type Model struct {
 	preview    viewport.Model
 	full       *tb.FullMessage
 	images     *imageStore
+	cellW      int // terminal cell size in px (0 if unknown)
+	cellH      int
+	placements []render.Placement // inline images in the preview, for sixel overlay
+	links      []link             // links in the open message, for the picker
+
+	viewGen      int // bumped when the list changes view; stale async results are dropped
+	viewCtx      context.Context
+	cancelView   context.CancelFunc
+	replied      map[int]replyInfo
+	reply        *loadedReply
+	replyLoading int
+
+	picker     *picker
+	attVP      viewport.Model
+	attTitle   string
 	previewSeq int
 
 	showAgent  bool
@@ -89,9 +107,7 @@ type Model struct {
 	draftFile  string    // edited file kept after a parse error so the text isn't lost
 	submitting bool      // a save/send is in flight
 	pending    *tb.Draft // agent draft waiting for the current draft to finish
-	moveIDs    []int
-	moveAcct   string // account whose folders the move picker shows
-	moveFcur   int    // folder cursor to restore after moving
+	moveIDs    []int     // messages the move picker will move
 }
 
 // listView is what the message list shows: one or more folders, or a search.
@@ -127,6 +143,7 @@ type (
 		err    error
 	}
 	previewTick struct{ seq, id int }
+	readTick    struct{ seq, id int } // the cursor rested on a message for 1s
 	previewMsg  struct {
 		seq int
 		m   tb.FullMessage
@@ -162,7 +179,8 @@ func Run(c *tb.Client, ag *agent.Agent) error {
 	ti := textinput.New()
 	ti.Prompt = "> "
 	m := Model{c: c, ag: ag, ctx: context.Background(), input: ti, accounts: map[string]tb.Account{},
-		preview: newViewport(), agentVP: newViewport(), status: "connecting to Thunderbird…", images: newImageStore()}
+		preview: newViewport(), agentVP: newViewport(), attVP: newViewport(), status: "connecting to Thunderbird…",
+		images: newImageStore(), replied: map[int]replyInfo{}}
 	defer m.images.close()
 	prog = tea.NewProgram(m, tea.WithAltScreen())
 	_, err := prog.Run()
@@ -228,12 +246,14 @@ func (m *Model) loadList(appendPage bool) tea.Cmd {
 func (m *Model) schedulePreview() tea.Cmd {
 	m.previewSeq++
 	if len(m.msgs) == 0 {
-		m.full = nil
+		m.full, m.placements, m.links = nil, nil, nil
 		m.preview.SetContent("")
 		return nil
 	}
 	seq, id := m.previewSeq, m.msgs[m.mcur].ID
-	return tea.Tick(150*time.Millisecond, func(time.Time) tea.Msg { return previewTick{seq, id} })
+	return tea.Batch(
+		tea.Tick(150*time.Millisecond, func(time.Time) tea.Msg { return previewTick{seq, id} }),
+		tea.Tick(time.Second, func(time.Time) tea.Msg { return readTick{seq, id} }))
 }
 
 func (m Model) act(text string, remove []int, f func() error) tea.Cmd {
@@ -253,6 +273,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.w, m.h = msg.Width, msg.Height
+		if ws, err := unix.IoctlGetWinsize(int(os.Stdout.Fd()), unix.TIOCGWINSZ); err == nil && ws.Col > 0 && ws.Row > 0 {
+			m.cellW, m.cellH = int(ws.Xpixel)/int(ws.Col), int(ws.Ypixel)/int(ws.Row)
+		}
 		m.layout()
 		cmd := m.refreshPreview(false)
 		return m, cmd
@@ -293,7 +316,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.openTab(0)
 		}
 		m.tab = min(m.tab, len(m.acctOrder))
-		m.fcur = min(m.fcur, max(0, len(m.visibleFolders())-1))
 		return m, nil
 	case listMsg:
 		if msg.seq != m.listSeq {
@@ -325,10 +347,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.hasMore {
 			m.status += fmt.Sprintf(" since %s (more below)", m.before.Local().Format("2006-01-02"))
 		}
+		status := m.loadReplyStatus(msg.msgs)
 		if msg.append {
-			return m, nil
+			return m, status
 		}
-		return m, m.schedulePreview()
+		return m, tea.Batch(m.schedulePreview(), status)
 	case previewTick:
 		if msg.seq != m.previewSeq {
 			return m, nil
@@ -338,6 +361,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			full, err := c.Read(ctx, msg.id)
 			return previewMsg{seq: msg.seq, m: full, err: err}
 		}
+	case readTick:
+		x, ok := m.selected()
+		if msg.seq != m.previewSeq || !ok || x.ID != msg.id || x.Read {
+			return m, nil
+		}
+		m.msgs[m.mcur].Read = true
+		c, ctx := m.c, m.ctx
+		return m, m.act("", nil, func() error { return c.Mark(ctx, []int{x.ID}, "read") })
 	case previewMsg:
 		if msg.seq != m.previewSeq {
 			return m, nil
@@ -348,7 +379,57 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.full = &msg.m
 		cmd := m.refreshPreview(true)
+		reply := m.maybeLoadReply()
+		return m, tea.Batch(cmd, reply)
+	case replyStatusMsg:
+		if msg.gen != m.viewGen {
+			return m, nil
+		}
+		for id, r := range msg.status {
+			m.replied[id] = r
+		}
+		reply := m.maybeLoadReply()
+		cmd := m.refreshPreview(false) // forwarded/replied header on the open message
+		return m, tea.Batch(reply, cmd)
+	case sentReplyMsg:
+		if msg.err != nil {
+			m.err = "loading your reply: " + msg.err.Error()
+			m.replyLoading = 0 // allow a retry next time the message opens
+			return m, nil
+		}
+		m.reply = &loadedReply{forID: msg.forID, msg: msg.msg}
+		cmd := m.refreshPreview(false)
 		return m, cmd
+	case sixelMsg:
+		return m, nil // re-render picks up the encoded images
+	case noteMsg:
+		if msg.err != nil {
+			m.err = msg.err.Error()
+		} else {
+			m.err, m.status = "", msg.text
+		}
+		return m, nil
+	case attPreviewMsg:
+		if m.mode != mPicker || m.picker != msg.picker { // user moved on while it loaded
+			return m, nil
+		}
+		if msg.err != nil {
+			m.err = msg.err.Error()
+			return m, nil
+		}
+		m.err, m.status = "", ""
+		if msg.image != "" {
+			return m, tea.Exec(viewerCmd{[]string{msg.image}}, func(err error) tea.Msg { return noteMsg{"", err} })
+		}
+		text := render.Text(msg.text, m.attVP.Width)
+		if msg.html {
+			text = render.HTML(msg.text, render.Opts{Width: m.attVP.Width, Styled: true, Links: true})
+		}
+		m.attTitle = msg.title
+		m.attVP.SetContent(text)
+		m.attVP.GotoTop()
+		m.mode = mAttView
+		return m, nil
 	case imagesMsg:
 		// refresh whatever is open: it may share image URLs with msg.msgID
 		cmd := m.refreshPreview(false)
@@ -358,7 +439,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.err = msg.err.Error()
 			return m, nil
 		}
-		m.err, m.status = "", msg.text
+		m.err = ""
+		if msg.text != "" {
+			m.status = msg.text
+		}
 		if len(msg.remove) > 0 {
 			gone := map[int]bool{}
 			for _, id := range msg.remove {
@@ -428,7 +512,9 @@ func (m *Model) refreshPreview(top bool) tea.Cmd {
 	if m.full == nil {
 		return nil
 	}
-	content, misses := m.renderMessage(*m.full)
+	content, misses, links := m.renderMessage(*m.full)
+	content, m.placements = render.Placements(content)
+	m.links = links
 	off := m.preview.YOffset
 	m.preview.SetContent(content)
 	if top {
@@ -436,10 +522,20 @@ func (m *Model) refreshPreview(top bool) tea.Cmd {
 	} else {
 		m.preview.SetYOffset(off)
 	}
-	if len(misses) == 0 {
-		return nil
+	var cmds []tea.Cmd
+	if m.inlineSixel() {
+		cmds = append(cmds, encodeSixels(m.images, m.placements, m.cellW, m.cellH))
 	}
-	return fetchImages(m.ctx, m.c, m.images, m.full.ID, misses)
+	if len(misses) > 0 {
+		cmds = append(cmds, fetchImages(m.ctx, m.c, m.images, m.full.ID, misses))
+	}
+	return tea.Batch(cmds...)
+}
+
+// inlineSixel: draw sharp images in the preview (sixel terminals that report
+// their cell size). LAZYTHUNDER_GRAPHICS=blocks turns it off.
+func (m Model) inlineSixel() bool {
+	return termimg.Protocol() == "sixel" && m.cellW > 0 && m.cellH > 0
 }
 
 func (m *Model) say(line string) {
@@ -448,14 +544,9 @@ func (m *Model) say(line string) {
 	m.agentVP.GotoBottom()
 }
 
-// visibleFolders is the folder pane's content: the move target account's
-// folders while picking, every inbox on the All tab, else the tab's account.
-func (m Model) visibleFolders() []tb.Folder {
+// foldersOf lists an account's folders; "" lists every account's inbox.
+func (m Model) foldersOf(acct string) []tb.Folder {
 	var out []tb.Folder
-	acct := m.tabAccount()
-	if m.mode == mMovePick {
-		acct = m.moveAcct
-	}
 	if acct == "" {
 		for _, id := range m.acctOrder {
 			for _, f := range m.folders {
@@ -496,34 +587,38 @@ func (m Model) openTab(i int) (tea.Model, tea.Cmd) {
 	if i < 0 || i > len(m.acctOrder) {
 		return m, nil
 	}
-	m.tab, m.fcur = i, 0
+	m.tab = i
 	if i == 0 {
 		ids := []string{} // non-nil: nil means "search results"
-		for _, f := range m.visibleFolders() {
+		for _, f := range m.foldersOf("") {
 			ids = append(ids, f.ID)
 		}
 		return m.show(listView{title: "All inboxes", folderIDs: ids})
 	}
-	for j, f := range m.visibleFolders() {
+	fs := m.foldersOf(m.tabAccount())
+	for _, f := range fs {
 		if f.Type == "inbox" {
-			m.fcur = j
-			break
+			return m.openFolder(f)
 		}
 	}
-	return m.openFolder()
+	if len(fs) > 0 {
+		return m.openFolder(fs[0])
+	}
+	return m, nil
 }
 
-func (m Model) openFolder() (tea.Model, tea.Cmd) {
-	vis := m.visibleFolders()
-	if m.fcur >= len(vis) {
-		return m, nil
-	}
-	f := vis[m.fcur]
+func (m Model) openFolder(f tb.Folder) (tea.Model, tea.Cmd) {
 	return m.show(listView{title: m.accounts[f.AccountID].Name + " › " + f.Name, folderIDs: []string{f.ID}, accountID: f.AccountID})
 }
 
 func (m Model) show(v listView) (tea.Model, tea.Cmd) {
 	m.view, m.msgs, m.mcur = v, nil, 0
+	m.viewGen++
+	if m.cancelView != nil {
+		m.cancelView() // stop reply-status lookups for the old view
+	}
+	m.viewCtx, m.cancelView = context.WithCancel(m.ctx)
+	m.replied = map[int]replyInfo{}
 	m.status = "loading " + v.title + "…"
 	return m, tea.Batch(m.loadList(false), m.schedulePreview())
 }
@@ -543,6 +638,20 @@ func (m Model) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.keyInput(k)
 	case mDraft:
 		return m.keyDraft(s)
+	case mPicker:
+		return m.keyPicker(s)
+	case mAttView:
+		switch s {
+		case "esc", "q", "h", "left":
+			m.mode = mPicker
+			if m.picker == nil {
+				m.mode = mNormal
+			}
+			return m, nil
+		}
+		var cmd tea.Cmd
+		m.attVP, cmd = m.attVP.Update(k)
+		return m, cmd
 	}
 	if !m.ready {
 		switch s {
@@ -558,32 +667,21 @@ func (m Model) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// global keys
 	switch s {
 	case "q":
-		if m.mode == mMovePick {
-			m.mode = mNormal
-			return m, nil
-		}
 		return m, tea.Quit
 	case "?":
 		m.mode = mHelp
 		return m, nil
-	case "tab", "L":
-		m.focus = (m.focus + 1) % 3
+	case "tab", "shift+tab":
+		m.focus = 1 - m.focus
 		return m, nil
-	case "shift+tab", "H":
-		m.focus = (m.focus + 2) % 3
-		return m, nil
-	case "1", "2", "3":
+	case "1", "2":
 		m.focus = pane(s[0] - '1')
 		return m, nil
+	case "l":
+		return m.openFolderPicker()
 	case "alt+1", "alt+2", "alt+3", "alt+4", "alt+5", "alt+6", "alt+7", "alt+8", "alt+9":
-		if m.mode == mMovePick {
-			return m, nil
-		}
 		return m.openTab(int(s[4] - '1'))
 	case "[", "]":
-		if m.mode == mMovePick {
-			return m, nil
-		}
 		n := len(m.acctOrder) + 1
 		return m.openTab((m.tab + map[string]int{"[": n - 1, "]": 1}[s]) % n)
 	case "/":
@@ -613,11 +711,6 @@ func (m Model) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "ctrl+r":
 		return m, tea.Batch(m.loadFolders(), m.loadList(false))
 	case "esc":
-		if m.mode == mMovePick {
-			m = m.endMove()
-			m.status = "move cancelled"
-			return m, nil
-		}
 		if m.agentBusy && m.agentStop != nil {
 			m.agentStop()
 			return m, nil
@@ -628,8 +721,6 @@ func (m Model) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	switch m.focus {
-	case pFolders:
-		return m.keyFolders(s)
 	case pMessages:
 		return m.keyMessages(s)
 	default:
@@ -667,31 +758,9 @@ func move(cur, n int, s string, page int) int {
 	return max(0, min(cur, n-1))
 }
 
-func (m Model) keyFolders(s string) (tea.Model, tea.Cmd) {
-	switch s {
-	case "enter", "l", "right":
-		vis := m.visibleFolders()
-		if m.fcur >= len(vis) {
-			return m, nil
-		}
-		if m.mode == mMovePick {
-			to := vis[m.fcur]
-			ids := m.moveIDs
-			m = m.endMove()
-			m.focus = pMessages
-			c, ctx := m.c, m.ctx
-			return m, m.act("moved to "+to.Name, ids, func() error { return c.Move(ctx, ids, to.ID) })
-		}
-		m.focus = pMessages
-		return m.openFolder()
-	}
-	m.fcur = move(m.fcur, len(m.visibleFolders()), s, m.listHeight()/2)
-	return m, nil
-}
-
 func (m Model) keyMessages(s string) (tea.Model, tea.Cmd) {
 	switch s {
-	case "enter", "l", "right":
+	case "enter", "right":
 		m.focus = pDetail
 		m.showAgent = false
 		if x, ok := m.selected(); ok && !x.Read {
@@ -699,9 +768,6 @@ func (m Model) keyMessages(s string) (tea.Model, tea.Cmd) {
 			c, ctx := m.c, m.ctx
 			return m, m.act("", nil, func() error { return c.Mark(ctx, []int{x.ID}, "read") })
 		}
-		return m, nil
-	case "h", "left":
-		m.focus = pFolders
 		return m, nil
 	}
 	old := m.mcur
@@ -742,17 +808,24 @@ func (m Model) keyMessageActions(s string, passthrough tea.Cmd) (tea.Model, tea.
 		m.mode = mConfirm
 		return m, nil
 	case "M":
-		if m.mode == mMovePick {
-			return m, nil
-		}
-		m.mode, m.moveIDs, m.focus = mMovePick, ids, pFolders
-		m.moveAcct, m.moveFcur, m.fcur = x.Folder.AccountID, m.fcur, 0
-		m.status = "pick a folder and press enter (esc cancels)"
-		return m, nil
+		m.moveIDs = ids
+		return m.openMovePicker(x.Folder.AccountID)
 	case "r", "R", "f":
 		kind := map[string]tb.DraftKind{"r": tb.Reply, "R": tb.ReplyAll, "f": tb.Forward}[s]
 		m = m.openDraft(tb.Draft{Kind: kind, ReplyTo: x.ID})
 		return m, m.edit()
+	case "o":
+		if m.full == nil || m.full.ID != x.ID {
+			m.status = "open the message first"
+			return m, nil
+		}
+		return m.openLinkPicker()
+	case "A":
+		if m.full == nil || m.full.ID != x.ID {
+			m.status = "open the message first"
+			return m, nil
+		}
+		return m.openAttachmentPicker()
 	case "i":
 		if m.full == nil || m.full.ID != x.ID {
 			m.status = "open the message first"
@@ -777,16 +850,7 @@ func (m Model) keyMessageActions(s string, passthrough tea.Cmd) (tea.Model, tea.
 	return m, passthrough
 }
 
-// endMove leaves the move picker and restores the folder cursor.
-func (m Model) endMove() Model {
-	m.mode, m.moveIDs, m.fcur = mNormal, nil, m.moveFcur
-	return m
-}
-
 func (m Model) startInput(purpose, placeholder, value string) (tea.Model, tea.Cmd) {
-	if m.mode == mMovePick {
-		m = m.endMove()
-	}
 	if purpose == "agent" && m.agentBusy {
 		m.status = "borealis2 is busy (esc to cancel)"
 		return m, nil
