@@ -134,12 +134,13 @@ func decodeFile(path string) (image.Image, error) {
 	return img, err
 }
 
-// SixelCells encodes img to exactly fill cols×rows terminal cells of
-// cellW×cellH px (height rounded down to a sixel band of 6 px, so it never
-// spills into the row below). Transparent pixels keep the text underneath.
-func SixelCells(img image.Image, cols, rows, cellW, cellH int) string {
-	w, h := cols*cellW, rows*cellH/6*6
-	if w <= 0 || h <= 0 {
+// SixelCells encodes img fitted (aspect kept) into cols×rows cells of
+// cellW×cellH px, returning only cell rows [top, top+n) — the part of the
+// image that is on screen. The height is rounded down to a 6 px sixel band so
+// it never spills into the row below; transparent pixels stay transparent.
+func SixelCells(img image.Image, cols, rows, cellW, cellH, top, n int) string {
+	w, h := cols*cellW, rows*cellH
+	if w <= 0 || h <= 0 || top < 0 || n <= 0 || top+n > rows {
 		return ""
 	}
 	// keep the image's aspect inside the cell box; the rest stays transparent
@@ -150,10 +151,15 @@ func SixelCells(img image.Image, cols, rows, cellW, cellH int) string {
 	}
 	dst := image.NewNRGBA(image.Rect(0, 0, w, h))
 	xdraw.CatmullRom.Scale(dst, image.Rect(0, 0, max(1, fw), max(1, fh)), img, img.Bounds(), xdraw.Src, nil)
+	y0 := top * cellH
+	y1 := y0 + (n*cellH)/6*6
+	if y1 <= y0 {
+		return ""
+	}
 	var b bytes.Buffer
 	enc := sixel.NewEncoder(&b)
 	enc.Transparent = true
-	if enc.Encode(dst) != nil {
+	if enc.Encode(dst.SubImage(image.Rect(0, y0, w, y1))) != nil {
 		return ""
 	}
 	return b.String()

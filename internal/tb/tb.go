@@ -58,12 +58,18 @@ func (c *Client) Run(ctx context.Context, out any, args ...string) error {
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	runErr := cmd.Run()
+	name := args[0]
+	for i := 0; i < len(args) && strings.HasPrefix(args[i], "-"); i += 2 { // skip global flags like --timeout N
+		if i+2 < len(args) {
+			name = args[i+2]
+		}
+	}
 	var env envelope
 	if err := json.Unmarshal(stdout.Bytes(), &env); err != nil {
 		if runErr != nil {
-			return fmt.Errorf("tb %s: %v: %s", args[0], runErr, strings.TrimSpace(stderr.String()))
+			return fmt.Errorf("tb %s: %v: %s", name, runErr, strings.TrimSpace(stderr.String()))
 		}
-		return fmt.Errorf("tb %s: bad JSON: %v", args[0], err)
+		return fmt.Errorf("tb %s: bad JSON: %v", name, err)
 	}
 	if !env.OK {
 		return &Error{Code: env.Code, Msg: env.Error}
@@ -168,8 +174,15 @@ type SearchOpts struct {
 	Limit                               int
 }
 
+// SearchWindow bounds full-text searches without an explicit Since: an
+// unbounded search over a large profile takes minutes in the add-on.
+const SearchWindow = "90d"
+
 func (c *Client) Search(ctx context.Context, query string, o SearchOpts) (p Page, err error) {
-	args := []string{"search", query}
+	args := []string{"--timeout", "120000", "search", query}
+	if query != "" && o.Since == "" {
+		o.Since = SearchWindow
+	}
 	if o.From != "" {
 		args = append(args, "--from", o.From)
 	}

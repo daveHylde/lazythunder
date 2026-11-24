@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"sort"
 	"strings"
 	"time"
 
@@ -229,6 +230,7 @@ func (m *Model) loadList(appendPage bool) tea.Cmd {
 		return func() tea.Msg {
 			// shortcut: one page of search hits; tb search has no offset paging
 			p, err := c.Search(ctx, q, tb.SearchOpts{Unread: unread, Limit: pageSize})
+			sort.SliceStable(p.Messages, func(i, j int) bool { return p.Messages[i].Date.After(p.Messages[j].Date) })
 			return listMsg{seq: seq, msgs: p.Messages, err: err}
 		}
 	}
@@ -401,7 +403,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmd := m.refreshPreview(false)
 		return m, cmd
 	case sixelMsg:
+		if msg.failed {
+			cmd := m.refreshPreview(false) // draw the failed ones as half-blocks
+			return m, cmd
+		}
 		return m, nil // re-render picks up the encoded images
+	case sixelTick:
+		if msg.offset != m.preview.YOffset {
+			return m, nil // still scrolling
+		}
+		return m, encodeSixels(m.images, m.visibleSixels(), m.cellW, m.cellH)
 	case noteMsg:
 		if msg.err != nil {
 			m.err = msg.err.Error()
@@ -524,7 +535,7 @@ func (m *Model) refreshPreview(top bool) tea.Cmd {
 	}
 	var cmds []tea.Cmd
 	if m.inlineSixel() {
-		cmds = append(cmds, encodeSixels(m.images, m.placements, m.cellW, m.cellH))
+		cmds = append(cmds, encodeSixels(m.images, m.visibleSixels(), m.cellW, m.cellH))
 	}
 	if len(misses) > 0 {
 		cmds = append(cmds, fetchImages(m.ctx, m.c, m.images, m.full.ID, misses))
@@ -729,9 +740,14 @@ func (m Model) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			vp = &m.agentVP
 		}
 		var cmd tea.Cmd
+		before := vp.YOffset
 		*vp, cmd = vp.Update(k)
 		if s == "h" || s == "left" {
 			m.focus = pMessages
+		}
+		if !m.showAgent && m.preview.YOffset != before && m.inlineSixel() {
+			off := m.preview.YOffset // encode the newly visible image parts once scrolling pauses
+			cmd = tea.Batch(cmd, tea.Tick(120*time.Millisecond, func(time.Time) tea.Msg { return sixelTick{off} }))
 		}
 		if !m.showAgent {
 			return m.keyMessageActions(s, cmd)
@@ -880,7 +896,7 @@ func (m Model) keyInput(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.prevView = m.view
 			}
 			m.focus = pMessages
-			return m.show(listView{title: fmt.Sprintf("Search: %s (esc to go back)", v), query: v})
+			return m.show(listView{title: fmt.Sprintf("Search: %s · last %s (esc to go back)", v, tb.SearchWindow), query: v})
 		}
 		return m.askAgent(v)
 	}

@@ -29,7 +29,7 @@ var (
 )
 
 var tools = []map[string]any{
-	fn("search", "Full-text search across all accounts. Returns message headers.", map[string]any{
+	fn("search", "Full-text search across all accounts, last 90 days unless since is given (older searches are slow). Returns message headers.", map[string]any{
 		"query":       str,
 		"from":        map[string]any{"type": "string", "description": "sender substring"},
 		"folder_id":   str,

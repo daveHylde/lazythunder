@@ -47,6 +47,19 @@ func Blocks(img image.Image, maxCols, maxRows int) []string {
 	return lines
 }
 
+// Blank returns empty rows (braille blanks, so text cleanup keeps them) the
+// size a w×h px image takes at cw×ch px per cell, fitted into maxCols×maxRows.
+func Blank(w, h, maxCols, maxRows, cw, ch int) []string {
+	pw, ph := fit(w, h, maxCols*cw, maxRows*ch)
+	cols, rows := max(1, (pw+cw-1)/cw), max(1, (ph+ch-1)/ch)
+	line := strings.Repeat("\u2800", cols)
+	out := make([]string, rows)
+	for i := range out {
+		out[i] = line
+	}
+	return out
+}
+
 // fit scales w×h down (never up) to fit within maxW×maxH, keeping aspect.
 func fit(w, h, maxW, maxH int) (int, int) {
 	if w > maxW {

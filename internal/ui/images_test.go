@@ -10,6 +10,9 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/davidhyldgaard/lazythunder/internal/render"
+	"github.com/davidhyldgaard/lazythunder/internal/tb"
 )
 
 // bombPNG is a tiny file whose header claims 50000×50000 pixels.
@@ -50,5 +53,29 @@ func TestDownloadRefusesLocalhost(t *testing.T) {
 	defer srv.Close()
 	if err := download(context.Background(), srv.URL+"/x.png", filepath.Join(t.TempDir(), "x")); err == nil {
 		t.Fatal("fetched from localhost")
+	}
+}
+
+func TestVisibleSixelsCrop(t *testing.T) {
+	m := Model{cellW: 10, cellH: 20, full: &tb.FullMessage{}}
+	m.preview.Height, m.preview.YOffset = 10, 5
+	m.placements = []render.Placement{
+		{Token: "a", Line: 3, Rows: 4},  // rows 3..6: top two scrolled away
+		{Token: "b", Line: 8, Rows: 3},  // fully visible
+		{Token: "c", Line: 13, Rows: 6}, // rows 13..18: bottom cut at 14
+		{Token: "d", Line: 0, Rows: 2},  // off screen
+	}
+	got := map[string][3]int{}
+	for _, r := range m.visibleSixels() {
+		got[r.p.Token] = [3]int{r.top, r.n, r.row}
+	}
+	want := map[string][3]int{"a": {2, 2, 1}, "b": {0, 3, 5}, "c": {0, 2, 9}}
+	if len(got) != len(want) {
+		t.Fatalf("got %v", got)
+	}
+	for k, w := range want {
+		if got[k] != w {
+			t.Errorf("%s: got top,n,row %v want %v", k, got[k], w)
+		}
 	}
 }

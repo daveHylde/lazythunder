@@ -13,6 +13,9 @@ import (
 	"github.com/davidhyldgaard/lazythunder/internal/tb"
 )
 
+// maxTextWidth caps email text (and the reply/draft text) for readability.
+const maxTextWidth = 75
+
 var (
 	accent    = lipgloss.Color("4")
 	dim       = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
@@ -212,31 +215,47 @@ func (m Model) viewDetail(w, h int) string {
 	return panel(title, m.withSixel(strings.Split(m.preview.View(), "\n")), w, h, focused)
 }
 
-// withSixel overlays sharp sixel images on the block-drawn ones that are fully
-// visible. The sequence goes at the end of the image's last row: by the time
-// the terminal gets there, every row of the image has been written, so no
-// later text in this frame erases it, and bubbletea only rewrites rows that
-// change. Partly visible images keep their blocks.
-func (m Model) withSixel(lines []string) []string {
+// visibleSixels lists the on-screen part of every inline image in the preview.
+func (m Model) visibleSixels() []sixelReq {
 	if !m.inlineSixel() || m.full == nil {
-		return lines
+		return nil
 	}
 	top, h := m.preview.YOffset, m.preview.Height
+	var out []sixelReq
 	for _, p := range m.placements {
-		if p.Line < top || p.Line+p.Rows > top+h || p.Line+p.Rows-1-top >= len(lines) {
+		a, b := max(top, p.Line), min(top+h, p.Line+p.Rows)
+		if b > a {
+			out = append(out, sixelReq{p: p, top: a - p.Line, n: b - a, row: b - 1 - top})
+		}
+	}
+	return out
+}
+
+// withSixel paints sharp sixel images into the blank areas the renderer left
+// for them. bubbletea rewrites only rows whose text changed, and rewriting a
+// row erases the pixels under it, so every row of a visible image carries the
+// same invisible state marker (offset, crop, encoded or not): the rows change
+// together, and the sequence on the last row runs after all of them have been
+// written, redrawing the image. Unchanged frames rewrite nothing.
+func (m Model) withSixel(lines []string) []string {
+	for _, r := range m.visibleSixels() {
+		if r.row >= len(lines) {
 			continue
 		}
-		enc := m.images.sixelFor(p, m.cellW, m.cellH)
+		enc := m.images.sixelFor(r, m.cellW, m.cellH)
+		tag := fmt.Sprintf("\x1b_lt%d.%d.%d.%d\x1b\\", m.preview.YOffset, r.top, r.n, len(enc)) // APC: ignored by the terminal
+		for i := max(0, r.row-r.n+1); i <= r.row; i++ {
+			lines[i] += tag
+		}
 		if enc == "" {
-			continue
+			continue // not encoded yet (e.g. just scrolled): blank briefly
 		}
 		up := ""
-		if p.Rows > 1 {
-			up = fmt.Sprintf("\x1b[%dA", p.Rows-1)
+		if r.n > 1 {
+			up = fmt.Sprintf("\x1b[%dA", r.n-1)
 		}
 		// column: 1-based, +1 for the panel's left border
-		last := p.Line + p.Rows - 1 - top
-		lines[last] += "\x1b7" + up + fmt.Sprintf("\x1b[%dG", p.Col+2) + enc + "\x1b8"
+		lines[r.row] += "\x1b7" + up + fmt.Sprintf("\x1b[%dG", r.p.Col+2) + enc + "\x1b8"
 	}
 	return lines
 }
@@ -260,7 +279,7 @@ func (m Model) draftLines(w int) []string {
 		head[i] = dim.Render(render.Sanitize(head[i]))
 	}
 	help := bold.Render("e edit · enter save draft · S send · x discard")
-	return append(append(append([]string{help, ""}, head...), ""), strings.Split(render.Text(d.Body, w), "\n")...)
+	return append(append(append([]string{help, ""}, head...), ""), strings.Split(render.Text(d.Body, min(w, maxTextWidth)), "\n")...)
 }
 
 func (m Model) renderChat() string {
@@ -274,7 +293,8 @@ func (m Model) renderChat() string {
 // renderMessage returns the preview text, the image srcs still to fetch and
 // the message's links.
 func (m Model) renderMessage(x tb.FullMessage) (string, []string, []link) {
-	w := m.preview.Width
+	paneW := m.preview.Width
+	w := min(paneW, maxTextWidth) // text wraps at 75 columns; images may use the pane
 	var b strings.Builder
 	if r, ok := m.replied[x.ID]; ok {
 		b.WriteString(m.renderOwnReply(x.ID, r, w))
@@ -313,7 +333,8 @@ func (m Model) renderMessage(x tb.FullMessage) (string, []string, []link) {
 		cw, ch = 8, 16
 	}
 	b.WriteString(render.Body(x.Parts.Text, x.Parts.HTML, render.Opts{Width: w, Styled: true, Links: true, PreferHTML: true,
-		Image: image, CellW: cw, CellH: ch, ImageRows: max(3, m.preview.Height-1), OnLink: onLink}))
+		Image: image, CellW: cw, CellH: ch, ImageRows: max(3, m.preview.Height-1), ImageWidth: paneW,
+		BlankImages: m.inlineSixel(), OnLink: onLink}))
 	return b.String(), misses, links
 }
 

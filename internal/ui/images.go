@@ -42,15 +42,16 @@ const (
 // imageStore caches decoded images per message and keeps the original files
 // for the hi-res viewer. Shared by all Model copies, so it is mutex-guarded.
 type imageStore struct {
-	mu    sync.Mutex
-	dir   string
-	imgs  map[string]image.Image
-	paths map[string]string
-	state map[string]imgState
-	order map[int][]string // message id -> keys in document order
-	seen  map[int]map[string]bool
-	keyOf map[string]string // placement token -> key
-	sixel map[string]string // token|cols|rows|cell size -> encoded sixel ("" while encoding)
+	mu      sync.Mutex
+	dir     string
+	imgs    map[string]image.Image
+	paths   map[string]string
+	state   map[string]imgState
+	order   map[int][]string // message id -> keys in document order
+	seen    map[int]map[string]bool
+	keyOf   map[string]string // placement token -> key
+	sixel   map[string]string // token|cols|rows|cell size|crop -> encoded sixel ("" while encoding)
+	noSixel map[string]bool   // keys whose sixel encode failed: shown as half-blocks
 }
 
 // newImageStore returns nil (images disabled) if no temp dir can be made.
@@ -61,7 +62,7 @@ func newImageStore() *imageStore {
 	}
 	return &imageStore{dir: dir, imgs: map[string]image.Image{}, paths: map[string]string{},
 		state: map[string]imgState{}, order: map[int][]string{}, seen: map[int]map[string]bool{},
-		keyOf: map[string]string{}, sixel: map[string]string{}}
+		keyOf: map[string]string{}, sixel: map[string]string{}, noSixel: map[string]bool{}}
 }
 
 func (s *imageStore) close() {
@@ -99,6 +100,9 @@ func (s *imageStore) lookup(msgID int, src string) (image.Image, bool, string) {
 		s.order[msgID] = append(s.order[msgID], k)
 	}
 	if img := s.imgs[k]; img != nil {
+		if s.noSixel[k] {
+			return img, false, "" // no token: rendered with half-blocks
+		}
 		t := hash(k)
 		s.keyOf[t] = k
 		return img, false, t
@@ -110,44 +114,54 @@ func (s *imageStore) lookup(msgID int, src string) (image.Image, bool, string) {
 	return nil, true, ""
 }
 
-func sixelKey(p render.Placement, cw, ch int) string {
-	return fmt.Sprintf("%s|%d|%d|%d|%d", p.Token, p.Cols, p.Rows, cw, ch)
+// sixelReq is the on-screen part of an inline image: cell rows [top, top+n).
+type sixelReq struct {
+	p      render.Placement
+	top, n int
+	row    int // screen row (within the preview) of the image's last visible row
 }
 
-// sixelFor returns the encoded sixel for a placement if it is ready.
-func (s *imageStore) sixelFor(p render.Placement, cw, ch int) string {
+func sixelKey(r sixelReq, cw, ch int) string {
+	return fmt.Sprintf("%s|%d|%d|%d|%d|%d|%d", r.p.Token, r.p.Cols, r.p.Rows, cw, ch, r.top, r.n)
+}
+
+// sixelFor returns the encoded sixel for a request if it is ready.
+func (s *imageStore) sixelFor(r sixelReq, cw, ch int) string {
 	if s == nil {
 		return ""
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.sixel[sixelKey(p, cw, ch)]
+	return s.sixel[sixelKey(r, cw, ch)]
 }
 
-type sixelMsg struct{}
+type (
+	sixelMsg  struct{ failed bool } // failed: some image fell back to blocks, re-render
+	sixelTick struct{ offset int }  // scrolling paused here: encode what is visible
+)
 
-// encodeSixels encodes the placements that have no cached sixel yet.
-func encodeSixels(s *imageStore, ps []render.Placement, cw, ch int) tea.Cmd {
-	if s == nil || len(ps) == 0 {
+// encodeSixels encodes the requests that have no cached sixel yet.
+func encodeSixels(s *imageStore, reqs []sixelReq, cw, ch int) tea.Cmd {
+	if s == nil || len(reqs) == 0 {
 		return nil
 	}
 	type job struct {
 		key, path string
-		p         render.Placement
+		r         sixelReq
 	}
 	var jobs []job
 	s.mu.Lock()
 	if len(s.sixel) > 64 { // shortcut: crude bound on encoded-image memory; LRU if it matters
 		s.sixel = map[string]string{}
 	}
-	for _, p := range ps {
-		k := sixelKey(p, cw, ch)
+	for _, r := range reqs {
+		k := sixelKey(r, cw, ch)
 		if _, ok := s.sixel[k]; ok {
 			continue
 		}
-		if path := s.paths[s.keyOf[p.Token]]; path != "" {
+		if path := s.paths[s.keyOf[r.p.Token]]; path != "" {
 			s.sixel[k] = "" // in progress
-			jobs = append(jobs, job{k, path, p})
+			jobs = append(jobs, job{k, path, r})
 		}
 	}
 	s.mu.Unlock()
@@ -155,16 +169,23 @@ func encodeSixels(s *imageStore, ps []render.Placement, cw, ch int) tea.Cmd {
 		return nil
 	}
 	return func() tea.Msg {
+		failed := false
 		for _, j := range jobs {
 			enc := ""
-			if img, err := decode(j.path, j.p.Cols*cw); err == nil { // full resolution, not the thumbnail
-				enc = termimg.SixelCells(img, j.p.Cols, j.p.Rows, cw, ch)
+			if img, err := decode(j.path, j.r.p.Cols*cw); err == nil { // full resolution, not the thumbnail
+				enc = termimg.SixelCells(img, j.r.p.Cols, j.r.p.Rows, cw, ch, j.r.top, j.r.n)
 			}
 			s.mu.Lock()
-			s.sixel[j.key] = enc
+			if enc == "" {
+				delete(s.sixel, j.key)
+				s.noSixel[s.keyOf[j.r.p.Token]] = true
+				failed = true
+			} else {
+				s.sixel[j.key] = enc
+			}
 			s.mu.Unlock()
 		}
-		return sixelMsg{}
+		return sixelMsg{failed}
 	}
 }
 

@@ -24,8 +24,12 @@ type Opts struct {
 	PreferHTML bool // render the HTML part even when a text part exists
 	// Image returns a loaded image for an <img> src, or nil to fall back to
 	// [alt]. A non-empty token marks the image's first row (see Placements).
-	Image        func(src string) (image.Image, string)
-	ImageRows    int // max rows per inline image (default 12)
+	Image      func(src string) (image.Image, string)
+	ImageRows  int // max rows per inline image (default 12)
+	ImageWidth int // max columns per inline image (default Width): images may be wider than text
+	// BlankImages leaves image areas empty instead of drawing half-blocks,
+	// for terminals where the UI paints sharp graphics over them.
+	BlankImages  bool
 	CellW, CellH int // terminal cell size in px, for natural image sizing (default 6×12)
 	// OnLink is called for every http(s)/mailto link, in document order.
 	OnLink func(url, label string)
@@ -370,6 +374,9 @@ func (r *renderer) sub(n *html.Node, indent int) []string {
 	if r.o.Width > 0 {
 		s.o.Width = max(10, r.o.Width-indent)
 	}
+	if r.o.ImageWidth > 0 {
+		s.o.ImageWidth = max(10, r.o.ImageWidth-indent)
+	}
 	for c := n.FirstChild; c != nil; c = c.NextSibling {
 		s.walk(c)
 	}
@@ -560,6 +567,9 @@ func (r *renderer) img(n *html.Node) {
 				w, h = b.Dx(), b.Dy()
 			}
 			width, rows := r.o.Width, r.o.ImageRows
+			if r.o.ImageWidth > 0 {
+				width = r.o.ImageWidth
+			}
 			if width <= 0 {
 				width = 80
 			}
@@ -571,7 +581,12 @@ func (r *renderer) img(n *html.Node) {
 				cw, ch = 6, 12
 			}
 			// natural size: one image pixel per screen pixel, capped to the pane
-			lines := termimg.Blocks(img, min(width, (w+cw-1)/cw), min(rows, (h+ch-1)/ch))
+			var lines []string
+			if r.o.BlankImages && token != "" { // no token: the UI can't paint it, so draw blocks
+				lines = termimg.Blank(w, h, width, rows, cw, ch)
+			} else {
+				lines = termimg.Blocks(img, min(width, (w+cw-1)/cw), min(rows, (h+ch-1)/ch))
+			}
 			if len(lines) == 0 {
 				return
 			}
