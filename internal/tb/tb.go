@@ -126,6 +126,17 @@ type Attachment struct {
 	ContentType string `json:"contentType"`
 	PartName    string `json:"partName"`
 	Size        int    `json:"size"`
+	ContentID   string `json:"contentId"` // only from Attachments(), for cid: references
+}
+
+// Attachments lists a message's parts including inline ones with content ids.
+func (c *Client) Attachments(ctx context.Context, id int) (a []Attachment, err error) {
+	return a, c.Run(ctx, &a, "attachments", strconv.Itoa(id))
+}
+
+// Download saves one part of a message to path.
+func (c *Client) Download(ctx context.Context, id int, part, path string) error {
+	return c.Run(ctx, nil, "attachment-download", strconv.Itoa(id), part, "--output", path)
 }
 
 type FullMessage struct {

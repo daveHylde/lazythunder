@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"image"
 	"strings"
 	"time"
 
@@ -37,9 +38,6 @@ func (m Model) listHeight() int { return max(1, m.topHeight()-3) }
 func (m *Model) layout() {
 	m.preview.Width, m.preview.Height = m.w-2, m.bottomHeight()-3
 	m.agentVP.Width, m.agentVP.Height = m.w-2, m.bottomHeight()-3
-	if m.full != nil {
-		m.preview.SetContent(m.renderMessage(*m.full))
-	}
 	if len(m.chat) > 0 {
 		m.agentVP.SetContent(m.renderChat())
 	}
@@ -253,7 +251,8 @@ func (m Model) renderChat() string {
 	return strings.Join(parts, "\n\n")
 }
 
-func (m Model) renderMessage(x tb.FullMessage) string {
+// renderMessage returns the preview text and the image srcs still to fetch.
+func (m Model) renderMessage(x tb.FullMessage) (string, []string) {
 	w := m.preview.Width
 	var b strings.Builder
 	hdr := func(k, v string) {
@@ -269,8 +268,16 @@ func (m Model) renderMessage(x tb.FullMessage) string {
 		b.WriteString(dim.Render(fmt.Sprintf("📎 %s (%d KB)", render.Sanitize(a.Name), (a.Size+1023)/1024)) + "\n")
 	}
 	b.WriteString(dim.Render(strings.Repeat("─", w)) + "\n")
-	b.WriteString(render.Body(x.Parts.Text, x.Parts.HTML, render.Opts{Width: w, Styled: true, Links: true, PreferHTML: true}))
-	return b.String()
+	var misses []string
+	image := func(src string) image.Image {
+		img, fetch := m.images.lookup(x.ID, src)
+		if fetch {
+			misses = append(misses, src)
+		}
+		return img
+	}
+	b.WriteString(render.Body(x.Parts.Text, x.Parts.HTML, render.Opts{Width: w, Styled: true, Links: true, PreferHTML: true, Image: image}))
+	return b.String(), misses
 }
 
 func (m Model) viewBottom() string {
@@ -317,6 +324,7 @@ const helpText = `lazythunder — keys
                e  archive          d  delete (to trash)
                M  move to folder   c  compose new
                r  reply   R  reply all   f  forward
+               i  view the message's images full screen (sixel/kitty)
 
  borealis2     a  ask the agent (it can search, read, and act with your y/n)
                s  summarize selected message/thread

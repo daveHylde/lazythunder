@@ -1,6 +1,7 @@
 package render
 
 import (
+	"image"
 	"strings"
 	"testing"
 	"time"
@@ -108,6 +109,30 @@ func TestPreKeepsIndentAndBidiStripped(t *testing.T) {
 	}
 	if got := Sanitize("a\u202eb"); got != "ab" {
 		t.Fatalf("bidi: %q", got)
+	}
+}
+
+func TestImages(t *testing.T) {
+	logo := image.NewNRGBA(image.Rect(0, 0, 60, 24))
+	for i := range logo.Pix {
+		logo.Pix[i] = 255
+	}
+	var asked []string
+	o := Opts{Width: 40, Styled: true, Image: func(src string) image.Image {
+		asked = append(asked, src)
+		if src == "cid:logo" {
+			return logo
+		}
+		return nil
+	}}
+	got := HTML(`<p>Hi</p><img src="cid:logo"><img src="https://t.example/p.gif" width="1" height="1" alt="px"><img src="https://x/y.png" alt="Banner">`, o)
+	lines := strings.Split(got, "\n")
+	// 60×24 px at 6×12 px per cell -> 10 cols × 2 rows
+	if len(lines) != 5 || lines[0] != "Hi" || lines[1] != "" || ansi.StringWidth(lines[2]) != 10 || !strings.Contains(lines[4], "[Banner]") {
+		t.Fatalf("got %q", lines)
+	}
+	if strings.Join(asked, ",") != "cid:logo,https://x/y.png" {
+		t.Fatalf("tracking pixel was requested: %v", asked)
 	}
 }
 

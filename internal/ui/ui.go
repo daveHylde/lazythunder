@@ -71,6 +71,7 @@ type Model struct {
 
 	preview    viewport.Model
 	full       *tb.FullMessage
+	images     *imageStore
 	previewSeq int
 
 	showAgent  bool
@@ -161,7 +162,8 @@ func Run(c *tb.Client, ag *agent.Agent) error {
 	ti := textinput.New()
 	ti.Prompt = "> "
 	m := Model{c: c, ag: ag, ctx: context.Background(), input: ti, accounts: map[string]tb.Account{},
-		preview: newViewport(), agentVP: newViewport(), status: "connecting to Thunderbird…"}
+		preview: newViewport(), agentVP: newViewport(), status: "connecting to Thunderbird…", images: newImageStore()}
+	defer m.images.close()
 	prog = tea.NewProgram(m, tea.WithAltScreen())
 	_, err := prog.Run()
 	return err
@@ -252,7 +254,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.w, m.h = msg.Width, msg.Height
 		m.layout()
-		return m, nil
+		cmd := m.refreshPreview(false)
+		return m, cmd
 	case statusMsg:
 		m.status = string(msg)
 		return m, nil
@@ -344,9 +347,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.full = &msg.m
-		m.preview.SetContent(m.renderMessage(msg.m))
-		m.preview.GotoTop()
-		return m, nil
+		cmd := m.refreshPreview(true)
+		return m, cmd
+	case imagesMsg:
+		// refresh whatever is open: it may share image URLs with msg.msgID
+		cmd := m.refreshPreview(false)
+		return m, cmd
 	case doneMsg:
 		if msg.err != nil {
 			m.err = msg.err.Error()
@@ -414,6 +420,26 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.key(msg)
 	}
 	return m, nil
+}
+
+// refreshPreview re-renders the open message and starts fetching any images
+// it references that aren't loaded yet; imagesMsg triggers another refresh.
+func (m *Model) refreshPreview(top bool) tea.Cmd {
+	if m.full == nil {
+		return nil
+	}
+	content, misses := m.renderMessage(*m.full)
+	off := m.preview.YOffset
+	m.preview.SetContent(content)
+	if top {
+		m.preview.GotoTop()
+	} else {
+		m.preview.SetYOffset(off)
+	}
+	if len(misses) == 0 {
+		return nil
+	}
+	return fetchImages(m.ctx, m.c, m.images, m.full.ID, misses)
 }
 
 func (m *Model) say(line string) {
@@ -727,6 +753,22 @@ func (m Model) keyMessageActions(s string, passthrough tea.Cmd) (tea.Model, tea.
 		kind := map[string]tb.DraftKind{"r": tb.Reply, "R": tb.ReplyAll, "f": tb.Forward}[s]
 		m = m.openDraft(tb.Draft{Kind: kind, ReplyTo: x.ID})
 		return m, m.edit()
+	case "i":
+		if m.full == nil || m.full.ID != x.ID {
+			m.status = "open the message first"
+			return m, nil
+		}
+		files := m.images.files(x.ID)
+		if len(files) == 0 {
+			m.status = "no images in this message"
+			return m, nil
+		}
+		return m, tea.Exec(viewerCmd{files}, func(err error) tea.Msg {
+			if err != nil {
+				return statusMsg("image viewer: " + err.Error())
+			}
+			return nil
+		})
 	case "s":
 		return m.askAgent(fmt.Sprintf("Summarize message id %d. If it is part of a thread, read the thread first and summarize the whole conversation. Then list any action items for me.", x.ID))
 	case "w":

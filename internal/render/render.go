@@ -3,7 +3,9 @@ package render
 
 import (
 	"fmt"
+	"image"
 	"regexp"
+	"strconv"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -11,6 +13,8 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	"golang.org/x/net/html"
 	"golang.org/x/net/html/atom"
+
+	"github.com/davidhyldgaard/lazythunder/internal/termimg"
 )
 
 type Opts struct {
@@ -18,6 +22,9 @@ type Opts struct {
 	Styled     bool // ANSI bold/italic/underline/colour
 	Links      bool // number links as [n] and list the URLs at the end
 	PreferHTML bool // render the HTML part even when a text part exists
+	// Image returns a loaded image for an <img> src, or nil to fall back to [alt].
+	Image     func(src string) image.Image
+	ImageRows int // max rows per inline image (default 12)
 }
 
 // Body picks the best part of a message and renders it.
@@ -337,9 +344,7 @@ func (r *renderer) walk(n *html.Node) {
 		r.blank()
 		r.out = append(r.out, strings.Repeat("─", max(3, min(r.o.Width, 40))), "")
 	case atom.Img:
-		if alt := strings.TrimSpace(attr(n, "alt")); alt != "" && attr(n, "width") != "1" {
-			r.text(" [" + alt + "] ")
-		}
+		r.img(n)
 	case atom.B, atom.Strong:
 		r.sgr(sgrBold)
 		r.children(n)
@@ -421,6 +426,41 @@ func (r *renderer) walk(n *html.Node) {
 		r.flush()
 	default:
 		r.children(n)
+	}
+}
+
+// Inline images are drawn near natural size: one cell ≈ 6×12 px.
+const cellW, cellH = 6, 12
+
+func (r *renderer) img(n *html.Node) {
+	w, _ := strconv.Atoi(strings.TrimSuffix(attr(n, "width"), "px"))
+	h, _ := strconv.Atoi(strings.TrimSuffix(attr(n, "height"), "px"))
+	if w > 0 && w <= 2 || h > 0 && h <= 2 {
+		return // tracking pixel
+	}
+	if src := strings.TrimSpace(attr(n, "src")); r.o.Image != nil && src != "" {
+		if img := r.o.Image(src); img != nil {
+			b := img.Bounds()
+			if b.Dx() <= 2 || b.Dy() <= 2 {
+				return
+			}
+			if w == 0 || h == 0 { // size from the image when the tag doesn't say
+				w, h = b.Dx(), b.Dy()
+			}
+			width, rows := r.o.Width, r.o.ImageRows
+			if width <= 0 {
+				width = 80
+			}
+			if rows <= 0 {
+				rows = 12
+			}
+			r.flush()
+			r.out = append(r.out, termimg.Blocks(img, min(width, (w+cellW-1)/cellW), min(rows, (h+cellH-1)/cellH))...)
+			return
+		}
+	}
+	if alt := strings.TrimSpace(attr(n, "alt")); alt != "" {
+		r.text(" [" + alt + "] ")
 	}
 }
 

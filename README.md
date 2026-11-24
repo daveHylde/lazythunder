@@ -36,7 +36,7 @@ Press `?` in the app for the full list.
 
 - **Tabs:** `alt+1` opens All inboxes, a merged newest-first list of every inbox. `alt+2..9` open accounts; `[`/`]` cycle. Tabs show inbox unread counts.
 - **Navigation:** `tab`/`1 2 3`/`h l` switch panels, `j k g G` move, `enter` opens a folder or reads a message (marks it read), `/` searches all accounts, `u` toggles unread-only.
-- **Mail:** `m` toggles read, `F` toggles flag, `e` archives, `d` deletes (to trash), `M` moves, `c` composes, `r`/`R`/`f` reply / reply all / forward.
+- **Mail:** `i` views images full screen, `m` toggles read, `F` toggles flag, `e` archives, `d` deletes (to trash), `M` moves, `c` composes, `r`/`R`/`f` reply / reply all / forward.
 - **Agent:** `a` asks borealis2, `s` summarizes the selected message or thread, `w` drafts a reply with AI, `ctrl+l` starts a new conversation, `esc` cancels a request.
 - **Drafts:** `e` edits in `$EDITOR`, `enter` saves to Drafts, `S` sends (asks y/n), `x` discards.
 
@@ -45,6 +45,8 @@ mark, move, archive or delete. It never sends: drafts it writes open in the
 draft screen for you to review.
 
 ## Notes
+
+- Images in emails are drawn inline with truecolor half-blocks, at most 12 rows tall. Embedded (`cid:`) images and remote `http(s)` images are both loaded automatically, which tells senders when you open their mail. Tracking pixels (≤2px) are skipped. Press `i` for the full-resolution viewer: kitty graphics in kitty/ghostty, sixel elsewhere (foot, wezterm). Set `LAZYTHUNDER_GRAPHICS=kitty|sixel` to override.
 
 - HTML mail is rendered in the terminal: bold, italic, headings, lists, quotes. Layout tables are flattened, hidden preheaders are dropped, and links are numbered `[n]` with their URLs listed at the end.
 
