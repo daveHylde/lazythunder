@@ -1,0 +1,180 @@
+// Package agent is a small tool-calling mail assistant backed by a local
+// llama.cpp server (OpenAI-compatible /v1/chat/completions).
+package agent
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"os"
+	"strings"
+	"time"
+
+	"github.com/davidhyldgaard/lazythunder/internal/tb"
+)
+
+type Msg struct {
+	Role       string     `json:"role"`
+	Content    string     `json:"content"`
+	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
+	ToolCallID string     `json:"tool_call_id,omitempty"`
+}
+
+type ToolCall struct {
+	ID       string `json:"id"`
+	Type     string `json:"type"`
+	Function struct {
+		Name      string `json:"name"`
+		Arguments string `json:"arguments"`
+	} `json:"function"`
+}
+
+// Hooks connect the agent to the UI. Confirm and Propose may block.
+type Hooks struct {
+	Confirm func(action string) bool // ask the user before a mutating action
+	Propose func(tb.Draft)           // hand a draft to the user's compose flow
+	Status  func(string)             // progress line, e.g. "searching…"
+}
+
+type Agent struct {
+	URL, Model string
+	TB         *tb.Client
+	History    []Msg
+	HTTP       *http.Client
+	accounts   string // identity list for the system prompt, loaded once
+}
+
+func New(c *tb.Client) *Agent {
+	url := os.Getenv("LAZYTHUNDER_LLM_URL")
+	if url == "" {
+		url = "http://127.0.0.1:8085/v1"
+	}
+	model := os.Getenv("LAZYTHUNDER_MODEL")
+	if model == "" {
+		model = "borealis2"
+	}
+	return &Agent{URL: url, Model: model, TB: c, HTTP: &http.Client{Timeout: 5 * time.Minute}}
+}
+
+func (a *Agent) Reset() { a.History = nil }
+
+const systemPrompt = `You are the mail assistant inside lazythunder, a terminal client for the user's Thunderbird.
+Today is %s. The user's accounts and identities:
+%s
+Current view: %s
+
+Use tools to look things up; never invent message contents or ids. Message ids are integers.
+Mutating tools (mark, move, archive, delete) ask the user for confirmation; if declined, accept it.
+To write an email or reply, call propose_draft: the user reviews and edits it before anything is saved or sent.
+Write drafts in the language of the conversation being answered. Sign with the user's name.
+Answer briefly and plainly; plain text, no markdown tables.`
+
+// Ask runs one user turn to completion and returns the assistant's final text.
+// viewCtx describes what the user is looking at (folder, selected message).
+func (a *Agent) Ask(ctx context.Context, user, viewCtx string, h Hooks) (string, error) {
+	if a.accounts == "" {
+		accts, err := a.TB.Accounts(ctx)
+		if err != nil {
+			return "", err
+		}
+		var b strings.Builder
+		for _, ac := range accts {
+			for _, id := range ac.Identities {
+				fmt.Fprintf(&b, "- account %s: %s <%s> (identity %s)\n", ac.ID, id.Name, id.Email, id.ID)
+			}
+		}
+		a.accounts = b.String()
+	}
+	// The system prompt is rebuilt each turn so the view context stays current.
+	sys := Msg{Role: "system", Content: fmt.Sprintf(systemPrompt, time.Now().Format("Monday 2006-01-02 15:04"), a.accounts, viewCtx)}
+	if len(a.History) == 0 {
+		a.History = []Msg{sys}
+	}
+	a.History[0] = sys
+	a.History = append(a.History, Msg{Role: "user", Content: user})
+	a.trim()
+
+	for step := 0; step < 10; step++ {
+		h.Status("thinking…")
+		reply, err := a.complete(ctx)
+		if err != nil {
+			return "", err
+		}
+		a.History = append(a.History, reply)
+		if len(reply.ToolCalls) == 0 {
+			return strings.TrimSpace(reply.Content), nil
+		}
+		for _, tc := range reply.ToolCalls {
+			h.Status(tc.Function.Name + " " + tc.Function.Arguments)
+			out := a.call(ctx, tc.Function.Name, tc.Function.Arguments, h)
+			a.History = append(a.History, Msg{Role: "tool", ToolCallID: tc.ID, Content: clip(out, 8000)})
+		}
+	}
+	return "", fmt.Errorf("agent gave up after 10 tool rounds")
+}
+
+// trim drops the oldest turns so the prompt stays well under the 32k context.
+// shortcut: char count approximates tokens; use /tokenize if contexts get tight.
+func (a *Agent) trim() {
+	size := func() (n int) {
+		for _, m := range a.History {
+			n += len(m.Content)
+		}
+		return
+	}
+	for size() > 60000 && len(a.History) > 2 {
+		// drop the oldest message after the system prompt, then any orphaned tool results
+		a.History = append(a.History[:1], a.History[2:]...)
+		for len(a.History) > 1 && a.History[1].Role == "tool" {
+			a.History = append(a.History[:1], a.History[2:]...)
+		}
+	}
+}
+
+func (a *Agent) complete(ctx context.Context) (Msg, error) {
+	body, _ := json.Marshal(map[string]any{
+		"model":       a.Model,
+		"messages":    a.History,
+		"tools":       tools,
+		"temperature": 0.4,
+	})
+	req, err := http.NewRequestWithContext(ctx, "POST", a.URL+"/chat/completions", bytes.NewReader(body))
+	if err != nil {
+		return Msg{}, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := a.HTTP.Do(req)
+	if err != nil {
+		return Msg{}, fmt.Errorf("llama.cpp at %s: %w", a.URL, err)
+	}
+	defer resp.Body.Close()
+	var out struct {
+		Choices []struct {
+			Message Msg `json:"message"`
+		} `json:"choices"`
+		Error *struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return Msg{}, fmt.Errorf("llama.cpp: %s: %w", resp.Status, err)
+	}
+	if out.Error != nil {
+		return Msg{}, fmt.Errorf("llama.cpp: %s", out.Error.Message)
+	}
+	if len(out.Choices) == 0 {
+		return Msg{}, fmt.Errorf("llama.cpp: empty response (%s)", resp.Status)
+	}
+	m := out.Choices[0].Message
+	m.Role = "assistant"
+	return m, nil
+}
+
+func clip(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return strings.ToValidUTF8(s[:n], "") + "\n…[truncated]"
+}
