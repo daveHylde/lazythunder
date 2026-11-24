@@ -5,7 +5,9 @@ A lazygit-style terminal UI for Thunderbird, built on
 local [llama.cpp](https://github.com/ggml-org/llama.cpp) mail assistant.
 
 ```
-[1] Folders │ [2] Messages │ [3] Preview / borealis2 / draft
+ 1 All inboxes (577) │ 2 me@gmail.com (457) │ 3 work@company.no …   ← alt+1..9
+[1] Folders  │ [2] Messages
+[3] Email (rendered HTML) / borealis2 / draft
 ```
 
 ## Requirements
@@ -32,6 +34,7 @@ go to `~/.local/state/lazythunder/`.
 
 Press `?` in the app for the full list.
 
+- **Tabs:** `alt+1` opens All inboxes, a merged newest-first list of every inbox. `alt+2..9` open accounts; `[`/`]` cycle. Tabs show inbox unread counts.
 - **Navigation:** `tab`/`1 2 3`/`h l` switch panels, `j k g G` move, `enter` opens a folder or reads a message (marks it read), `/` searches all accounts, `u` toggles unread-only.
 - **Mail:** `m` toggles read, `F` toggles flag, `e` archives, `d` deletes (to trash), `M` moves, `c` composes, `r`/`R`/`f` reply / reply all / forward.
 - **Agent:** `a` asks borealis2, `s` summarizes the selected message or thread, `w` drafts a reply with AI, `ctrl+l` starts a new conversation, `esc` cancels a request.
@@ -42,6 +45,8 @@ mark, move, archive or delete. It never sends: drafts it writes open in the
 draft screen for you to review.
 
 ## Notes
+
+- HTML mail is rendered in the terminal: bold, italic, headings, lists, quotes. Layout tables are flattened, hidden preheaders are dropped, and links are numbered `[n]` with their URLs listed at the end.
 
 - Sending needs **Allow agents to send email directly** ticked in the add-on's
   options. Without it, `S` fails with `SEND_DISABLED` and the draft stays open.

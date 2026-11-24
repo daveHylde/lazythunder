@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -13,6 +14,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -214,6 +216,60 @@ func (c *Client) Recent(ctx context.Context, folderID string, before time.Time, 
 		sortNewestFirst(p.Messages)
 		return p.Messages, since, since.After(floor), nil
 	}
+}
+
+// RecentMerged pages several folders as one newest-first list (e.g. all
+// inboxes). Each folder is fetched from before; the page ends at the newest
+// cursor among folders that have more, so nothing older than it is shown yet.
+// Messages from other folders past that cursor are refetched on the next page;
+// callers dedupe by id. If some folders fail, the rest are still returned
+// together with the error; only all failing yields no messages.
+func (c *Client) RecentMerged(ctx context.Context, folderIDs []string, before time.Time, unread bool) ([]Message, time.Time, bool, error) {
+	if len(folderIDs) == 1 {
+		return c.Recent(ctx, folderIDs[0], before, unread)
+	}
+	type res struct {
+		msgs []Message
+		next time.Time
+		more bool
+		err  error
+	}
+	res_ := make([]res, len(folderIDs))
+	var wg sync.WaitGroup
+	for i, id := range folderIDs {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			r := &res_[i]
+			r.msgs, r.next, r.more, r.err = c.Recent(ctx, id, before, unread)
+		}()
+	}
+	wg.Wait()
+	var horizon time.Time
+	more := false
+	var errs []error
+	for i, r := range res_ {
+		if r.err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", folderIDs[i], r.err))
+			continue
+		}
+		if r.more && r.next.After(horizon) {
+			horizon, more = r.next, true
+		}
+	}
+	var all []Message
+	for _, r := range res_ {
+		for _, m := range r.msgs {
+			if !m.Date.Before(horizon) {
+				all = append(all, m)
+			}
+		}
+	}
+	sortNewestFirst(all)
+	if len(errs) == len(folderIDs) && len(errs) > 0 {
+		return nil, time.Time{}, false, errors.Join(errs...)
+	}
+	return all, horizon, more, errors.Join(errs...)
 }
 
 func sortNewestFirst(ms []Message) {

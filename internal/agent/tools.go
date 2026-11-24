@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/davidhyldgaard/lazythunder/internal/render"
 	"github.com/davidhyldgaard/lazythunder/internal/tb"
 )
 
@@ -202,6 +203,6 @@ func FormatFull(m tb.FullMessage) string {
 	for _, at := range m.Parts.Attachments {
 		fmt.Fprintf(&b, "Attachment: %s (%s, %d bytes)\n", at.Name, at.ContentType, at.Size)
 	}
-	b.WriteString("\n" + m.PlainText())
+	b.WriteString("\n" + render.Body(m.Parts.Text, m.Parts.HTML, render.Opts{}))
 	return b.String()
 }

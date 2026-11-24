@@ -16,6 +16,7 @@ func TestMain(m *testing.M) {
 		os.Exit(m.Run())
 	}
 	var since, until time.Time
+	folder := fakeFolder
 	args := os.Args[1:]
 	for i := 0; i+1 < len(args); i++ {
 		switch args[i] {
@@ -23,10 +24,14 @@ func TestMain(m *testing.M) {
 			since, _ = time.Parse(time.RFC3339, args[i+1])
 		case "--until":
 			until, _ = time.Parse(time.RFC3339, args[i+1])
+		case "--folder":
+			if args[i+1] == "g" {
+				folder = sparseFolder
+			}
 		}
 	}
 	var hits []Message
-	for _, msg := range fakeFolder() {
+	for _, msg := range folder() {
 		if !msg.Date.Before(since) && !msg.Date.After(until) {
 			hits = append(hits, msg) // oldest first, like tb search
 		}
@@ -53,6 +58,49 @@ func fakeFolder() (ms []Message) {
 		add(fakeNow.Add(-time.Duration(i) * 12 * time.Hour))
 	}
 	return
+}
+
+// sparseFolder has one message every 3 days for two years, ids from 100001.
+func sparseFolder() (ms []Message) {
+	for i := 0; i < 240; i++ {
+		ms = append(ms, Message{ID: 100001 + i, Date: fakeNow.Add(-time.Duration(240-i) * 72 * time.Hour)})
+	}
+	return
+}
+
+func TestRecentMergedIsOrderedAndComplete(t *testing.T) {
+	t.Setenv("LT_FAKE_TB", "1")
+	c := &Client{Bin: os.Args[0], Port: "0"}
+	seen := map[int]bool{}
+	var order []Message
+	before := fakeNow.Add(time.Hour)
+	for page := 0; ; page++ {
+		if page > 300 {
+			t.Fatal("paging did not terminate")
+		}
+		ms, next, more, err := c.RecentMerged(context.Background(), []string{"f", "g"}, before, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, m := range ms {
+			if !seen[m.ID] {
+				seen[m.ID] = true
+				order = append(order, m)
+			}
+		}
+		if !more {
+			break
+		}
+		before = next
+	}
+	if want := len(fakeFolder()) + len(sparseFolder()); len(seen) != want {
+		t.Fatalf("saw %d of %d messages", len(seen), want)
+	}
+	for i := 1; i < len(order); i++ {
+		if order[i].Date.After(order[i-1].Date) {
+			t.Fatalf("out of order at %d: %v after %v", i, order[i].Date, order[i-1].Date)
+		}
+	}
 }
 
 func TestRecentPagesThroughBurstWithoutLoss(t *testing.T) {

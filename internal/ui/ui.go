@@ -13,7 +13,6 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 
 	"github.com/davidhyldgaard/lazythunder/internal/agent"
 	"github.com/davidhyldgaard/lazythunder/internal/tb"
@@ -24,7 +23,7 @@ type pane int
 const (
 	pFolders pane = iota
 	pMessages
-	pRight
+	pDetail
 )
 
 type mode int
@@ -55,12 +54,14 @@ type Model struct {
 	status string
 	err    string
 
-	folders  []tb.Folder
-	accounts map[string]tb.Account
-	fcur     int
-	open     *tb.Folder // folder shown in the message list; nil for search results
-	query    string     // active search, when open == nil
-	unread   bool       // unread-only filter
+	folders   []tb.Folder // all folders of all accounts (roots excluded)
+	accounts  map[string]tb.Account
+	acctOrder []string // account ids in tab order; tab 0 is "All inboxes"
+	tab       int
+	fcur      int // index into visibleFolders()
+	view      listView
+	prevView  listView // restored when leaving search results
+	unread    bool     // unread-only filter
 
 	msgs    []tb.Message
 	mcur    int
@@ -79,8 +80,8 @@ type Model struct {
 	agentState string
 	agentStop  context.CancelFunc
 
-	input    textinput.Model
-	inputFor string // "search" or "agent"
+	input      textinput.Model
+	inputFor   string // "search" or "agent"
 	confirm    *confirmation
 	draft      *tb.Draft
 	draftCtx   string
@@ -88,6 +89,16 @@ type Model struct {
 	submitting bool      // a save/send is in flight
 	pending    *tb.Draft // agent draft waiting for the current draft to finish
 	moveIDs    []int
+	moveAcct   string // account whose folders the move picker shows
+	moveFcur   int    // folder cursor to restore after moving
+}
+
+// listView is what the message list shows: one or more folders, or a search.
+type listView struct {
+	title     string
+	folderIDs []string // nil for search results
+	accountID string   // "" when merged across accounts
+	query     string
 }
 
 type confirmation struct {
@@ -193,20 +204,20 @@ func (m Model) loadFolders() tea.Cmd {
 func (m *Model) loadList(appendPage bool) tea.Cmd {
 	m.listSeq++
 	seq, unread, ctx, c := m.listSeq, m.unread, m.ctx, m.c
-	if m.open == nil {
-		q := m.query
+	if m.view.folderIDs == nil {
+		q := m.view.query
 		return func() tea.Msg {
 			// shortcut: one page of search hits; tb search has no offset paging
 			p, err := c.Search(ctx, q, tb.SearchOpts{Unread: unread, Limit: pageSize})
 			return listMsg{seq: seq, msgs: p.Messages, err: err}
 		}
 	}
-	id, before := m.open.ID, time.Time{}
+	ids, before := m.view.folderIDs, time.Time{}
 	if appendPage {
 		before = m.before
 	}
 	return func() tea.Msg {
-		ms, next, more, err := c.Recent(ctx, id, before, unread)
+		ms, next, more, err := c.RecentMerged(ctx, ids, before, unread)
 		return listMsg{seq: seq, msgs: ms, next: next, more: more, append: appendPage, err: err}
 	}
 }
@@ -264,30 +275,35 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.folders = append(m.folders, f)
 			}
 		}
+		hasFolders := map[string]bool{}
+		for _, f := range m.folders {
+			hasFolders[f.AccountID] = true
+		}
+		m.acctOrder = m.acctOrder[:0]
 		for _, a := range msg.accounts {
 			m.accounts[a.ID] = a
-		}
-		if m.open == nil && m.query == "" { // first load: open the first inbox
-			for i, f := range m.folders {
-				if f.Type == "inbox" {
-					m.fcur = i
-					break
-				}
+			if hasFolders[a.ID] {
+				m.acctOrder = append(m.acctOrder, a.ID)
 			}
-			return m.openFolder()
 		}
-		m.fcur = min(m.fcur, max(0, len(m.folders)-1))
+		if m.view.title == "" { // first load
+			return m.openTab(0)
+		}
+		m.tab = min(m.tab, len(m.acctOrder))
+		m.fcur = min(m.fcur, max(0, len(m.visibleFolders())-1))
 		return m, nil
 	case listMsg:
 		if msg.seq != m.listSeq {
 			return m, nil
 		}
+		m.err = ""
 		if msg.err != nil {
 			m.err = msg.err.Error()
-			m.hasMore = msg.append // let the next scroll retry the failed page
-			return m, nil
+			if msg.msgs == nil { // total failure; a merged view may still have partial results
+				m.hasMore = msg.append // let the next scroll retry the failed page
+				return m, nil
+			}
 		}
-		m.err = ""
 		if msg.append {
 			have := map[int]bool{}
 			for _, x := range m.msgs {
@@ -402,18 +418,88 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m *Model) say(line string) {
 	m.chat = append(m.chat, line)
-	m.agentVP.SetContent(lipgloss.NewStyle().Width(m.agentVP.Width).Render(strings.Join(m.chat, "\n\n")))
+	m.agentVP.SetContent(m.renderChat())
 	m.agentVP.GotoBottom()
 }
 
-func (m Model) openFolder() (tea.Model, tea.Cmd) {
-	if len(m.folders) == 0 {
+// visibleFolders is the folder pane's content: the move target account's
+// folders while picking, every inbox on the All tab, else the tab's account.
+func (m Model) visibleFolders() []tb.Folder {
+	var out []tb.Folder
+	acct := m.tabAccount()
+	if m.mode == mMovePick {
+		acct = m.moveAcct
+	}
+	if acct == "" {
+		for _, id := range m.acctOrder {
+			for _, f := range m.folders {
+				if f.AccountID == id && f.Type == "inbox" {
+					out = append(out, f)
+				}
+			}
+		}
+		return out
+	}
+	for _, f := range m.folders {
+		if f.AccountID == acct {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+// tabAccount is the active tab's account id, "" for All inboxes.
+func (m Model) tabAccount() string {
+	if m.tab == 0 || m.tab > len(m.acctOrder) {
+		return ""
+	}
+	return m.acctOrder[m.tab-1]
+}
+
+func (m Model) inboxUnread(acct string) (n int) {
+	for _, f := range m.folders {
+		if f.Type == "inbox" && (acct == "" || f.AccountID == acct) {
+			n += f.Unread
+		}
+	}
+	return n
+}
+
+// openTab switches account tab and shows its inbox (all inboxes on tab 0).
+func (m Model) openTab(i int) (tea.Model, tea.Cmd) {
+	if i < 0 || i > len(m.acctOrder) {
 		return m, nil
 	}
-	f := m.folders[m.fcur]
-	m.open, m.query, m.msgs = &f, "", nil
-	m.status = "loading " + f.Name + "…"
-	return m, m.loadList(false)
+	m.tab, m.fcur = i, 0
+	if i == 0 {
+		ids := []string{} // non-nil: nil means "search results"
+		for _, f := range m.visibleFolders() {
+			ids = append(ids, f.ID)
+		}
+		return m.show(listView{title: "All inboxes", folderIDs: ids})
+	}
+	for j, f := range m.visibleFolders() {
+		if f.Type == "inbox" {
+			m.fcur = j
+			break
+		}
+	}
+	return m.openFolder()
+}
+
+func (m Model) openFolder() (tea.Model, tea.Cmd) {
+	vis := m.visibleFolders()
+	if m.fcur >= len(vis) {
+		return m, nil
+	}
+	f := vis[m.fcur]
+	return m.show(listView{title: m.accounts[f.AccountID].Name + " › " + f.Name, folderIDs: []string{f.ID}, accountID: f.AccountID})
+}
+
+func (m Model) show(v listView) (tea.Model, tea.Cmd) {
+	m.view, m.msgs, m.mcur = v, nil, 0
+	m.status = "loading " + v.title + "…"
+	return m, tea.Batch(m.loadList(false), m.schedulePreview())
 }
 
 func (m Model) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -463,10 +549,21 @@ func (m Model) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "1", "2", "3":
 		m.focus = pane(s[0] - '1')
 		return m, nil
+	case "alt+1", "alt+2", "alt+3", "alt+4", "alt+5", "alt+6", "alt+7", "alt+8", "alt+9":
+		if m.mode == mMovePick {
+			return m, nil
+		}
+		return m.openTab(int(s[4] - '1'))
+	case "[", "]":
+		if m.mode == mMovePick {
+			return m, nil
+		}
+		n := len(m.acctOrder) + 1
+		return m.openTab((m.tab + map[string]int{"[": n - 1, "]": 1}[s]) % n)
 	case "/":
 		return m.startInput("search", "search all accounts", "")
 	case "a":
-		m.showAgent, m.focus = true, pRight
+		m.showAgent, m.focus = true, pDetail
 		return m.startInput("agent", "ask borealis2", "")
 	case "p":
 		m.showAgent = false
@@ -491,15 +588,16 @@ func (m Model) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(m.loadFolders(), m.loadList(false))
 	case "esc":
 		if m.mode == mMovePick {
-			m.mode, m.status = mNormal, "move cancelled"
+			m = m.endMove()
+			m.status = "move cancelled"
 			return m, nil
 		}
 		if m.agentBusy && m.agentStop != nil {
 			m.agentStop()
 			return m, nil
 		}
-		if m.open == nil && m.query != "" { // leave search results
-			return m.openFolder()
+		if m.view.folderIDs == nil && m.prevView.title != "" { // leave search results
+			return m.show(m.prevView)
 		}
 	}
 
@@ -546,10 +644,14 @@ func move(cur, n int, s string, page int) int {
 func (m Model) keyFolders(s string) (tea.Model, tea.Cmd) {
 	switch s {
 	case "enter", "l", "right":
+		vis := m.visibleFolders()
+		if m.fcur >= len(vis) {
+			return m, nil
+		}
 		if m.mode == mMovePick {
-			to := m.folders[m.fcur]
+			to := vis[m.fcur]
 			ids := m.moveIDs
-			m.mode, m.moveIDs = mNormal, nil
+			m = m.endMove()
 			m.focus = pMessages
 			c, ctx := m.c, m.ctx
 			return m, m.act("moved to "+to.Name, ids, func() error { return c.Move(ctx, ids, to.ID) })
@@ -557,14 +659,14 @@ func (m Model) keyFolders(s string) (tea.Model, tea.Cmd) {
 		m.focus = pMessages
 		return m.openFolder()
 	}
-	m.fcur = move(m.fcur, len(m.folders), s, m.listHeight()/2)
+	m.fcur = move(m.fcur, len(m.visibleFolders()), s, m.listHeight()/2)
 	return m, nil
 }
 
 func (m Model) keyMessages(s string) (tea.Model, tea.Cmd) {
 	switch s {
 	case "enter", "l", "right":
-		m.focus = pRight
+		m.focus = pDetail
 		m.showAgent = false
 		if x, ok := m.selected(); ok && !x.Read {
 			m.msgs[m.mcur].Read = true
@@ -614,7 +716,11 @@ func (m Model) keyMessageActions(s string, passthrough tea.Cmd) (tea.Model, tea.
 		m.mode = mConfirm
 		return m, nil
 	case "M":
+		if m.mode == mMovePick {
+			return m, nil
+		}
 		m.mode, m.moveIDs, m.focus = mMovePick, ids, pFolders
+		m.moveAcct, m.moveFcur, m.fcur = x.Folder.AccountID, m.fcur, 0
 		m.status = "pick a folder and press enter (esc cancels)"
 		return m, nil
 	case "r", "R", "f":
@@ -629,7 +735,16 @@ func (m Model) keyMessageActions(s string, passthrough tea.Cmd) (tea.Model, tea.
 	return m, passthrough
 }
 
+// endMove leaves the move picker and restores the folder cursor.
+func (m Model) endMove() Model {
+	m.mode, m.moveIDs, m.fcur = mNormal, nil, m.moveFcur
+	return m
+}
+
 func (m Model) startInput(purpose, placeholder, value string) (tea.Model, tea.Cmd) {
+	if m.mode == mMovePick {
+		m = m.endMove()
+	}
 	if purpose == "agent" && m.agentBusy {
 		m.status = "borealis2 is busy (esc to cancel)"
 		return m, nil
@@ -655,9 +770,11 @@ func (m Model) keyInput(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if m.inputFor == "search" {
-			m.open, m.query, m.focus = nil, v, pMessages
-			m.status = "searching…"
-			return m, m.loadList(false)
+			if m.view.folderIDs != nil {
+				m.prevView = m.view
+			}
+			m.focus = pMessages
+			return m.show(listView{title: fmt.Sprintf("Search: %s (esc to go back)", v), query: v})
 		}
 		return m.askAgent(v)
 	}
@@ -700,10 +817,11 @@ func (m Model) askAgent(q string) (tea.Model, tea.Cmd) {
 
 func (m Model) viewContext() string {
 	var b strings.Builder
-	if m.open != nil {
-		fmt.Fprintf(&b, "folder %s (%s)", m.open.ID, m.open.Name)
-	} else {
-		fmt.Fprintf(&b, "search results for %q", m.query)
+	switch {
+	case m.view.folderIDs == nil:
+		fmt.Fprintf(&b, "search results for %q", m.view.query)
+	default:
+		fmt.Fprintf(&b, "%s (folders %s)", m.view.title, strings.Join(m.view.folderIDs, ", "))
 	}
 	if x, ok := m.selected(); ok {
 		fmt.Fprintf(&b, "; selected message id %d from %s, subject %q", x.ID, x.Author, x.Subject)
@@ -862,11 +980,17 @@ func (m Model) contextFor(d tb.Draft) string {
 	return fmt.Sprintf("%s to message %d", kindName(d.Kind), d.ReplyTo)
 }
 
+// defaultIdentity sends from the selected message's account, else the tab's.
 func (m Model) defaultIdentity() string {
-	if m.open != nil {
-		if a, ok := m.accounts[m.open.AccountID]; ok && len(a.Identities) > 0 {
-			return a.Identities[0].Email
-		}
+	acct := m.view.accountID
+	if x, ok := m.selected(); ok {
+		acct = x.Folder.AccountID
+	}
+	if acct == "" {
+		acct = m.tabAccount()
+	}
+	if a, ok := m.accounts[acct]; ok && len(a.Identities) > 0 {
+		return a.Identities[0].Email
 	}
 	return ""
 }
