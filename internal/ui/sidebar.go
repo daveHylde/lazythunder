@@ -12,6 +12,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 
+	"github.com/davidhyldgaard/lazythunder/internal/agent"
 	"github.com/davidhyldgaard/lazythunder/internal/render"
 	"github.com/davidhyldgaard/lazythunder/internal/tb"
 	"github.com/davidhyldgaard/lazythunder/internal/termimg"
@@ -131,12 +132,6 @@ func (m Model) sidebarLines(w, h int) ([]string, *sixelReq) {
 	switch state {
 	case sumDone:
 		top = append(top, wrapDim(sum.Summary, "")...)
-		if len(sum.Actions) > 0 {
-			top = append(top, "", section("Action items"))
-			for _, a := range sum.Actions {
-				top = append(top, wrapDim(a, "☐ ")...)
-			}
-		}
 	case sumRunning:
 		top = append(top, dim.Render("summarizing…"))
 	case sumQueued:
@@ -147,6 +142,28 @@ func (m Model) sidebarLines(w, h int) ([]string, *sixelReq) {
 		top = append(top, dim.Render("rest on the message for a summary"))
 	}
 	top = append(top, "")
+
+	// To do: action items (with the link that does them), then the other safe links
+	info := linkInfos(sum)
+	urlLine := func(n int) string {
+		return dim.Render(ansi.Truncate("  "+shortURL(m.links[n-1].url), w, "…"))
+	}
+	usable := func(n int) bool { return n >= 1 && n <= len(m.links) && !info[n].Suspicious }
+	used := map[int]bool{}
+	if len(sum.Actions) > 0 || len(m.links) > 0 {
+		top = append(top, section("To do · o+n opens"))
+	}
+	for _, a := range sum.Actions {
+		text := a.Text
+		if usable(a.Link) {
+			text += fmt.Sprintf(" [%d]", a.Link)
+		}
+		top = append(top, wrapDim(text, "☐ ")...)
+		if usable(a.Link) {
+			used[a.Link] = true
+			top = append(top, urlLine(a.Link))
+		}
+	}
 
 	// attachments (bottom), with an automatic safe preview
 	var bottom []string
@@ -189,20 +206,15 @@ func (m Model) sidebarLines(w, h int) ([]string, *sixelReq) {
 		}
 	}
 
-	// links fill the middle
+	// the remaining links fill the middle
 	mid := []string{}
-	if room := h - len(top) - len(bottom) - 1; room > 1 && len(m.links) > 0 {
-		mid = append(mid, section(fmt.Sprintf("Links (%d) · o", len(m.links))))
-		for i, l := range m.links {
-			if len(mid) >= room {
-				break
-			}
-			label := l.label
-			if label == "" {
-				label = l.url
-			}
-			mid = append(mid, ansi.Truncate(fmt.Sprintf("%2d %s", i+1, oneLine(label)), w, "…"))
+	room := h - len(top) - len(bottom) - 1
+	for n := 1; n <= len(m.links) && len(mid)+2 <= room; n++ {
+		if usable(n) && !used[n] {
+			mid = append(mid, ansi.Truncate(fmt.Sprintf("[%d] %s", n, m.linkTitle(n, info)), w, "…"), urlLine(n))
 		}
+	}
+	if len(mid) > 0 {
 		mid = append(mid, "")
 	}
 
@@ -276,4 +288,25 @@ func (m Model) composeDetail(left []string, leftW int) []string {
 		}
 	}
 	return out
+}
+
+func linkInfos(sum agent.Summary) map[int]agent.LinkInfo {
+	info := map[int]agent.LinkInfo{}
+	for _, l := range sum.Links {
+		info[l.N] = l
+	}
+	return info
+}
+
+// linkTitle is borealis2's title for link n, else its text, else its host.
+func (m Model) linkTitle(n int, info map[int]agent.LinkInfo) string {
+	if t := oneLine(info[n].Title); t != "" {
+		return t
+	}
+	if t := oneLine(m.links[n-1].label); t != "" && !strings.Contains(t, "://") {
+		return t
+	}
+	u := shortURL(m.links[n-1].url)
+	host, _, _ := strings.Cut(u, "/")
+	return host
 }

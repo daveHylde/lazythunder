@@ -32,14 +32,12 @@ takk for & handelen.
 
 1x  Melkekanne  350 ml
 
-Se ordren[1] eller https://shop.no og igjen[1].
+Se ordren[1] eller https://shop.no[2] og igjen[1].
 
 • en
 • to
 
-[Logo]
-
-[1] https://track.example/abc`
+[Logo]`
 	if got := plain(src, 60); got != want {
 		t.Fatalf("got:\n%s\n---want:\n%s", got, want)
 	}
@@ -72,7 +70,7 @@ func TestStyledWidthsStayInBounds(t *testing.T) {
 
 func TestBlockInsideLinkDoesNotPanic(t *testing.T) {
 	got := plain(`<span>some text before the link <a href="https://x.no/y"><div>click</div></a></span>`, 40)
-	if !strings.Contains(got, "click") || !strings.HasSuffix(got, "[1] https://x.no/y") {
+	if !strings.Contains(got, "click") || !strings.HasSuffix(got, "click\n[1]") || strings.Contains(got, "https://") {
 		t.Fatalf("got %q", got)
 	}
 }
@@ -152,17 +150,24 @@ func TestPlacementMarkers(t *testing.T) {
 	}
 }
 
-func TestOnLinkCollectsAll(t *testing.T) {
+func TestOnLinkNumbersSafeLinks(t *testing.T) {
 	var got []string
-	o := Opts{OnLink: func(u, l string) { got = append(got, u+"|"+l) }}
-	HTML(`<a href="https://a.no/x">Se</a> <a href="https://b.no">https://b.no</a> <a href="#top">top</a> <a href="mailto:x@y.no">mail</a>`, o)
-	if strings.Join(got, ",") != "https://a.no/x|Se,https://b.no|https://b.no,mailto:x@y.no|mail" {
+	o := Opts{Links: true, OnLink: func(u, l string) { got = append(got, u+"|"+l) },
+		SafeLink: func(u, _ string) bool { return !strings.Contains(u, "bad") }}
+	out := HTML(`<a href="https://a.no/x">Se</a> <a href="https://bad.no">Bad</a> <a href="https://b.no">B</a> <a href="https://a.no/x">igjen</a> <a href="#top">top</a> <a href="mailto:x@y.no">mail</a>`, o)
+	if strings.Join(got, ",") != "https://a.no/x|Se,https://b.no|B" {
 		t.Fatalf("html links: %v", got)
 	}
+	if out != "Se[1] Bad B[2] igjen[1] top mail" {
+		t.Fatalf("html text: %q", out)
+	}
 	got = nil
-	Body("Les mer: https://c.no/a?b=1. Eller (https://d.no)", "", o)
+	out = Body("Les mer: https://c.no/a?b=1. Eller (https://d.no) https://bad.no", "", o)
 	if strings.Join(got, ",") != "https://c.no/a?b=1|,https://d.no|" {
 		t.Fatalf("text links: %v", got)
+	}
+	if out != "Les mer: https://c.no/a?b=1 [1]. Eller (https://d.no [2]) https://bad.no" {
+		t.Fatalf("text: %q", out)
 	}
 }
 

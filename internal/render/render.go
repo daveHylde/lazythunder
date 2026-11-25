@@ -20,7 +20,7 @@ import (
 type Opts struct {
 	Width      int  // wrap width; 0 = no wrapping
 	Styled     bool // ANSI bold/italic/underline/colour
-	Links      bool // number links as [n] and list the URLs at the end
+	Links      bool // mark numbered links as [n] in the text
 	PreferHTML bool // render the HTML part even when a text part exists
 	// Image returns a loaded image for an <img> src, or nil to fall back to
 	// [alt]. A non-empty token marks the image's first row (see Placements).
@@ -31,7 +31,9 @@ type Opts struct {
 	// for terminals where the UI paints sharp graphics over them.
 	BlankImages  bool
 	CellW, CellH int // terminal cell size in px, for natural image sizing (default 6×12)
-	// OnLink is called for every http(s)/mailto link, in document order.
+	// SafeLink decides which http(s) links get a number (nil: all of them).
+	SafeLink func(url, label string) bool
+	// OnLink is called once per numbered link, in number order (n = call count).
 	OnLink func(url, label string)
 	// StripQuotes drops quoted history (for showing just what a reply added).
 	StripQuotes bool
@@ -48,12 +50,37 @@ func Body(text, htmlPart string, o Opts) string {
 	if o.StripQuotes {
 		text = stripTextQuotes(text)
 	}
-	if o.OnLink != nil {
-		for _, u := range reURL.FindAllString(Sanitize(text), -1) {
-			o.OnLink(strings.TrimRight(u, ".,;:!?"), "")
-		}
+	if o.Links || o.OnLink != nil {
+		num := numberer(o)
+		text = reURL.ReplaceAllStringFunc(Sanitize(text), func(u string) string {
+			trimmed := strings.TrimRight(u, ".,;:!?")
+			if n := num(trimmed, ""); n > 0 && o.Links {
+				return trimmed + fmt.Sprintf(" [%d]", n) + u[len(trimmed):]
+			}
+			return u
+		})
 	}
 	return Text(text, o.Width)
+}
+
+// numberer returns a func giving a link its number (1-based, stable per URL),
+// or 0 when it is not an http(s) link that SafeLink accepts.
+func numberer(o Opts) func(url, label string) int {
+	nums := map[string]int{}
+	return func(u, label string) int {
+		if n, ok := nums[u]; ok {
+			return n
+		}
+		l := strings.ToLower(u)
+		if !strings.HasPrefix(l, "https://") && !strings.HasPrefix(l, "http://") || o.SafeLink != nil && !o.SafeLink(u, label) {
+			return 0
+		}
+		nums[u] = len(nums) + 1
+		if o.OnLink != nil {
+			o.OnLink(u, label)
+		}
+		return nums[u]
+	}
 }
 
 var (
@@ -167,6 +194,11 @@ func isInvisible(r rune) bool {
 	switch r {
 	case '\u200b', '\u200c', '\u200d', '\u2060', '\ufeff', '\u034f', '\u00ad', '\u180e':
 		return true
+	case '\ufe0f': // emoji presentation: terminals disagree on its width
+		return true
+	}
+	if r >= 0x1f3fb && r <= 0x1f3ff { // skin tones: wcswidth terminals (foot) draw them as an extra 2 cells
+		return true
 	}
 	return r >= '\u202a' && r <= '\u202e' || r >= '\u2066' && r <= '\u2069' // bidi overrides can spoof URLs
 }
@@ -206,10 +238,10 @@ const (
 
 type renderer struct {
 	o       Opts
-	links   *[]string
-	out     []string        // finished, wrapped lines
-	line    strings.Builder // inline content not yet wrapped
-	tail    rune            // last visible rune in line; 0 at line start
+	num     func(url, label string) int // numbers safe links (shared by nested renderers)
+	out     []string                    // finished, wrapped lines
+	line    strings.Builder             // inline content not yet wrapped
+	tail    rune                        // last visible rune in line; 0 at line start
 	pre     int
 	depth   int
 	stopped bool // StripQuotes reached the quoted part
@@ -236,23 +268,11 @@ func HTML(src string, o Opts) string {
 	if err != nil {
 		return Text(src, o.Width)
 	}
-	var links []string
-	r := &renderer{o: o, links: &links}
+	r := &renderer{o: o, num: numberer(o)}
 	r.walk(doc)
 	body := tidy(r.finish())
 	if o.StripQuotes { // the separator rule before a stripped quote
 		body = strings.TrimRight(strings.TrimRight(body, "─"), "\n")
-	}
-	if o.Links && len(links) > 0 {
-		var b strings.Builder
-		for i, l := range links {
-			fmt.Fprintf(&b, "[%d] %s\n", i+1, l)
-		}
-		foot := Text(b.String(), o.Width)
-		if o.Styled {
-			foot = sgrDim + strings.ReplaceAll(foot, "\n", sgrDimOff+"\n"+sgrDim) + sgrDimOff
-		}
-		body += "\n\n" + foot
 	}
 	return body
 }
@@ -370,7 +390,7 @@ func (r *renderer) finish() string {
 
 // sub renders n's children at a narrower width, for prefixed blocks.
 func (r *renderer) sub(n *html.Node, indent int) []string {
-	s := &renderer{o: r.o, links: r.links, pre: r.pre, depth: r.depth + 1}
+	s := &renderer{o: r.o, num: r.num, pre: r.pre, depth: r.depth + 1}
 	if r.o.Width > 0 {
 		s.o.Width = max(10, r.o.Width-indent)
 	}
@@ -609,33 +629,12 @@ func (r *renderer) link(n *html.Node) {
 	r.children(n)
 	r.sgr(sgrUnderOff)
 	label := textContent(n) // not sliced from r.line: block children flush it
-	if l := strings.ToLower(href); r.o.OnLink != nil && (strings.HasPrefix(l, "http://") || strings.HasPrefix(l, "https://") || strings.HasPrefix(l, "mailto:")) {
-		r.o.OnLink(Sanitize(href), label)
-	}
-	if !r.o.Links || href == "" || strings.HasPrefix(href, "#") || label == "" {
+	idx := r.num(Sanitize(href), label)
+	if !r.o.Links || idx == 0 {
 		return
 	}
-	bare := func(s string) string {
-		for _, p := range []string{"mailto:", "tel:", "https://", "http://"} {
-			s = strings.TrimPrefix(s, p)
-		}
-		return strings.TrimRight(s, "/")
-	}
-	if bare(href) == bare(label) || strings.HasPrefix(href, "mailto:") && strings.Contains(label, "@") {
-		return // the label already shows the target
-	}
-	idx := -1
-	for i, l := range *r.links {
-		if l == href {
-			idx = i
-		}
-	}
-	if idx < 0 {
-		*r.links = append(*r.links, href)
-		idx = len(*r.links) - 1
-	}
 	r.sgr(sgrDim)
-	r.write(fmt.Sprintf("[%d]", idx+1))
+	r.write(fmt.Sprintf("[%d]", idx))
 	r.sgr(sgrDimOff)
 }
 

@@ -29,7 +29,8 @@ func TestSummarizerQueueOrder(t *testing.T) {
 }
 
 func TestSidebarFitsHeightAndWidth(t *testing.T) {
-	m := Model{sum: &summarizer{cache: map[string]agent.Summary{"h": {Summary: strings.Repeat("ord ", 40), Actions: []string{"Gjør noe viktig i dag", "Svar Ola"}}}}}
+	m := Model{sum: &summarizer{cache: map[string]agent.Summary{"h": {Summary: strings.Repeat("ord ", 40), Actions: []agent.Action{{Text: "Gjør noe viktig i dag", Link: 2}, {Text: "Svar Ola"}},
+		Links: []agent.LinkInfo{{N: 1, Title: "Ordrestatus"}, {N: 3, Title: "Svindel", Suspicious: true}}}}}}
 	full := tb.FullMessage{}
 	full.HeaderMessageID = "h"
 	full.Parts.Attachments = []tb.Attachment{{Name: "faktura.pdf.exe", ContentType: "application/pdf", Size: 1000}, {Name: "bilde.png", ContentType: "image/png", Size: 5000}}
@@ -48,7 +49,14 @@ func TestSidebarFitsHeightAndWidth(t *testing.T) {
 				t.Fatalf("h=%d: line too wide (%d): %q", h, ansi.StringWidth(l), l)
 			}
 		}
-		if !strings.Contains(ansi.Strip(joined), "⚠ faktura.pdf.exe") { // attachments survive trimming
+		plain := ansi.Strip(joined)
+		if h >= 20 && !strings.Contains(plain, "[2]") || strings.Contains(plain, "Svindel") || strings.Contains(plain, "[3]") {
+			t.Fatalf("h=%d: action link or suspicious link wrong:\n%s", h, plain)
+		}
+		if h >= 40 && !strings.Contains(plain, "[1] Ordrestatus") {
+			t.Fatalf("titled link missing:\n%s", plain)
+		}
+		if !strings.Contains(plain, "⚠ faktura.pdf.exe") { // attachments survive trimming
 			t.Fatalf("risky attachment not flagged:\n%s", ansi.Strip(joined))
 		}
 	}

@@ -37,8 +37,8 @@ go to `~/.local/state/lazythunder/`.
 Press `?` in the app for the full list.
 
 - **Tabs:** `alt+1` opens All inboxes, a merged newest-first list of every inbox. `alt+2..9` open accounts; `[`/`]` cycle. Tabs show inbox unread counts.
-- **Navigation:** `tab`/`1 2` switch between list and message, `j k g G` move, `l` opens the folder picker, `enter` reads a message. Resting on a message for 1s marks it read. `/` searches all accounts, `u` toggles unread-only.
-- **Mail:** `o` opens the link picker (`enter` opens in the browser, `y` copies). `A` opens attachments: `enter` previews (images in the viewer, PDF via pdftotext, text/CSV/JSON/HTML in the pane), `d` saves to ~/Downloads, `o` opens in the default app. `i` views images full screen, `m` toggles read, `F` toggles flag, `e` archives, `d` deletes (to trash), `M` moves, `c` composes, `r`/`R`/`f` reply / reply all / forward.
+- **Navigation:** `tab`/`1 2` switch between list and message, `j k g G` move, `l` opens the folder picker, `enter` reads a message. Resting on a message for 1s marks it read. `/` searches all accounts: sender and subject over all time first (a few seconds), then message text from the last 90 days is merged in, newest first. `u` toggles unread-only. `pgup`/`pgdown` always scroll the message.
+- **Mail:** `o` opens the link picker: type a link's number to open `[n]` (`o3`), or `enter` opens in the browser, `y` copies. `U` unsubscribes without a browser and moves the message to trash (asks y/n). `A` opens attachments: `enter` previews (images in the viewer, PDF via pdftotext, text/CSV/JSON/HTML in the pane), `d` saves to ~/Downloads, `o` opens in the default app. `i` views images full screen, `m` toggles read, `F` toggles flag, `e` archives, `d` deletes (to trash), `M` moves, `c` composes, `r`/`R`/`f` reply / reply all / forward.
 - **Agent:** `a` asks borealis2, `s` summarizes the selected message or thread, `w` drafts a reply with AI, `ctrl+l` starts a new conversation, `esc` cancels a request.
 - **Drafts:** `e` edits in `$EDITOR`, `enter` saves to Drafts, `S` sends (asks y/n), `x` discards.
 
@@ -49,7 +49,7 @@ draft screen for you to review.
 ## Notes
 
 - Sidebar (`b` toggles; it needs 30 free columns beside the text):
-  - **Summary:** borealis2 writes a one-line summary and up to 3 action items for each new inbox message, in a background queue (one at a time, paused while you chat with the agent). Summaries are cached in `~/.cache/lazythunder/summaries.json`. Resting 1s on any message summarizes it next.
+  - **Summary:** borealis2 writes a one-line summary and up to 3 action items for each new inbox message, in a background queue (one at a time, paused while you chat with the agent). Summaries are cached in `~/.cache/lazythunder/summaries-v2.json`. Resting 1s on any message summarizes it next.
   - **Attachments:** the first image, PDF or text attachment is previewed automatically and safely. Images are decoded in Go. PDFs are read by `pdftotext` inside `bwrap`, with no network, read-only `/usr`, no home directory and only that one file visible. Nothing is ever run or opened by itself.
   - **Risky attachments:** executables, scripts, shortcuts, archives, macro Office files and HTML/SVG are flagged ⚠ (by any extension, so `invoice.pdf.exe` counts) and never previewed. Opening one asks for confirmation. A file whose content is an executable or script while its name says otherwise is never opened.
 - Replies written by borealis2 (`w` asks what to say in a few words) follow `~/.config/lazythunder/reply-guide.md`, created on first use: Norwegian or English to match the email, polite, to the point, no fluff, with a greeting/sign-off template. Edit it to taste.
@@ -57,7 +57,9 @@ draft screen for you to review.
 - Replies: a message shows ↩ if you sent a later message with the same subject (Re: or none) to its sender, and → if you forwarded it. The match uses Sent folders and subjects, so generic subjects can misfire. When you open a replied message, your reply is shown above it, dimmed, with the quoted history removed.
 - Images are shown complete at natural size, fit to the pane. In sixel terminals that report their cell size (foot, wezterm), fully visible images are drawn sharp in the preview; partly scrolled ones fall back to half-blocks, as do kitty/ghostty/alacritty. Embedded (`cid:`) images and remote `http(s)` images are both loaded automatically, which tells senders when you open their mail. Tracking pixels (≤2px) are skipped. Press `i` for the full-resolution viewer: kitty graphics in kitty/ghostty, sixel elsewhere (foot, wezterm). Set `LAZYTHUNDER_GRAPHICS=kitty|sixel` to override.
 
-- HTML mail is rendered in the terminal: bold, italic, headings, lists, quotes. Layout tables are flattened, hidden preheaders are dropped, and links are numbered `[n]` with their URLs listed at the end.
+- HTML mail is rendered in the terminal: bold, italic, headings, lists, quotes. Layout tables are flattened and hidden preheaders are dropped. Only safe links get a number `[n]`; there is no URL list in the text.
+- **Links:** a link is safe when it is https on a plain public host name (no IP, punycode, user@ or port), not a URL shortener, not an executable or archive download, not an unsubscribe link, and its text does not name a different site. borealis2 can also flag a link as suspicious, which hides it. The sidebar's **To do** list shows the action items (with the `[n]` that does each), then the other safe links, each with a short borealis2 title and its URL in grey.
+- **Unsubscribe (`U`):** tries, in order, RFC 8058 one-click (an HTTP POST), the List-Unsubscribe `mailto:` (sent from the address the mail came to; only its subject and body are used), then the unsubscribe web page, which borealis2 reads over plain HTTP and works through (fills your address, submits the form, follows links, up to 5 pages). Pages that need JavaScript, a CAPTCHA or a login are reported, not opened. Requests never go to private or local addresses.
 
 - Sending needs **Allow agents to send email directly** ticked in the add-on's
   options. Without it, `S` fails with `SEND_DISABLED` and the draft stays open.

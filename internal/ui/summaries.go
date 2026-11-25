@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -59,7 +60,7 @@ type (
 
 func newSummarizer(ag *agent.Agent, c *tb.Client) *summarizer {
 	s := &summarizer{cache: map[string]agent.Summary{}, failed: map[string]string{}, queued: map[string]bool{},
-		seen: map[string]bool{}, polled: map[string]bool{}, wake: make(chan struct{}, 1), ag: ag, c: c, path: filepath.Join(cacheDir(), "summaries.json")}
+		seen: map[string]bool{}, polled: map[string]bool{}, wake: make(chan struct{}, 1), ag: ag, c: c, path: filepath.Join(cacheDir(), "summaries-v2.json")}
 	if b, err := os.ReadFile(s.path); err == nil {
 		json.Unmarshal(b, &s.cache)
 	}
@@ -171,8 +172,11 @@ func (s *summarizer) summarize(ctx context.Context, id int) (agent.Summary, erro
 	if err != nil {
 		return agent.Summary{}, err
 	}
-	body := render.Body(m.Parts.Text, m.Parts.HTML, render.Opts{}) // plain text, no links or images
-	return s.ag.Summarize(ctx, m.Author, m.Subject, body)
+	// the same numbering as the preview (PreferHTML, safeLink), so [n] lines up
+	var links []string
+	body := render.Body(m.Parts.Text, m.Parts.HTML, render.Opts{Links: true, PreferHTML: true, SafeLink: safeLink,
+		OnLink: func(u, label string) { links = append(links, strings.TrimSpace(oneLine(label)+" → "+u)) }})
+	return s.ag.Summarize(ctx, m.Author, m.Subject, body, links)
 }
 
 // save writes the cache atomically, owner-only: summaries describe mail.

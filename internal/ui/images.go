@@ -232,14 +232,17 @@ var httpClient = &http.Client{
 	},
 }
 
+var _, cgnat, _ = net.ParseCIDR("100.64.0.0/10") // carrier-grade NAT, also Tailscale
+
 func publicOnly(network, address string, _ syscall.RawConn) error {
 	host, _, err := net.SplitHostPort(address)
 	if err != nil {
 		return err
 	}
 	ip := net.ParseIP(host)
-	if ip == nil || ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified() {
-		return fmt.Errorf("refusing to fetch image from %s", host)
+	if ip == nil || ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified() ||
+		ip.IsMulticast() || cgnat.Contains(ip) || ip.To4() != nil && ip.To4()[0] == 0 {
+		return fmt.Errorf("refusing to connect to private address %s", host)
 	}
 	return nil
 }

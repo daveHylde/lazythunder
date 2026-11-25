@@ -96,8 +96,13 @@ func (m Model) View() string {
 		return lipgloss.Place(m.w, m.h, lipgloss.Center, lipgloss.Center, box)
 	}
 	top := m.viewMessages(m.w, m.topHeight())
-	return strings.Join([]string{m.viewTabs(), top, m.viewDetail(m.w, m.bottomHeight()), m.viewBottom()}, "\n")
+	// Autowrap off (DECAWM): a glyph the terminal draws wider than we measured
+	// (emoji, newer Unicode) clips at the edge instead of wrapping and
+	// scrolling the tab bar off screen. Re-sent whenever the tab row redraws.
+	return strings.Join([]string{autowrapOff + m.viewTabs(), top, m.viewDetail(m.w, m.bottomHeight()), m.viewBottom()}, "\n")
 }
+
+const autowrapOff, autowrapOn = "\x1b[?7l", "\x1b[?7h"
 
 func (m Model) viewTabs() string {
 	label := func(i int, name string, unread int) string {
@@ -324,21 +329,15 @@ func (m Model) renderMessage(x tb.FullMessage) (string, []string, []link) {
 		}
 		return img, token
 	}
-	var links []link
-	seen := map[string]bool{}
-	onLink := func(u, label string) {
-		if !seen[u] {
-			seen[u] = true
-			links = append(links, link{url: u, label: label})
-		}
-	}
+	var links []link // links[n-1] is the text's [n]
+	onLink := func(u, label string) { links = append(links, link{url: u, label: label}) }
 	cw, ch := m.cellW, m.cellH
 	if cw <= 0 || ch <= 0 {
 		cw, ch = 8, 16
 	}
 	b.WriteString(render.Body(x.Parts.Text, x.Parts.HTML, render.Opts{Width: w, Styled: true, Links: true, PreferHTML: true,
 		Image: image, CellW: cw, CellH: ch, ImageRows: max(3, m.preview.Height-1), ImageWidth: paneW,
-		BlankImages: m.inlineSixel(), OnLink: onLink}))
+		BlankImages: m.inlineSixel(), SafeLink: safeLink, OnLink: onLink}))
 	return b.String(), misses, links
 }
 
@@ -404,11 +403,12 @@ const helpText = `lazythunder — keys
 
  navigation    tab, 1 2, enter / h             switch between list and message
                l                               folder picker
-               b                               toggle the sidebar (summary, actions, links, attachments)
+               b                               toggle the sidebar (summary, to do + links, attachments)
                j k, g G, ctrl+d ctrl+u         move / scroll (space pages the email)
+               pgup pgdown                     always scroll the email
                enter                           read message (resting 1s on it marks it read)
                u                               toggle unread-only
-               /                               search all accounts (esc returns)
+               /                               search sender + subject (all time) and text (90 days), newest first
                ctrl+r                          refresh
 
  message       m  toggle read      F  toggle flag
@@ -416,7 +416,8 @@ const helpText = `lazythunder — keys
                M  move to folder   c  compose new
                r  reply   R  reply all   f  forward
                i  view the message's images full screen (sixel/kitty)
-               o  link picker (enter open, y copy)
+               o  safe links (type n to open [n], enter open, y copy)
+               U  unsubscribe without a browser (one-click, mail, or borealis2 on the page), then trash
                A  attachments (enter preview, d download, o open)
                list: ● unread  ★ flagged  ↩ you replied  → you forwarded
 

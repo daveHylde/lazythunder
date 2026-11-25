@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -21,6 +22,7 @@ import (
 type link struct{ url, label string }
 
 type pickItem struct {
+	n             int // link number, as [n] in the text
 	title, detail string
 	link          link
 	att           tb.Attachment
@@ -32,6 +34,13 @@ type picker struct {
 	msgID int
 	items []pickItem
 	cur   int
+	num   string // digits typed so far (links: o3, o12)
+}
+
+// linkNumTick opens the typed link number once no second digit follows.
+type linkNumTick struct {
+	p   *picker
+	num string
 }
 
 type (
@@ -56,12 +65,16 @@ func (m Model) openLinkPicker() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	p := &picker{kind: "links", msgID: m.full.ID}
-	for _, l := range m.links {
-		title, detail := l.label, l.url
-		if title == "" || title == l.url {
-			title, detail = l.url, ""
+	sum, _, _ := m.sum.get(m.full.HeaderMessageID)
+	info := linkInfos(sum)
+	for i, l := range m.links {
+		if n := i + 1; !info[n].Suspicious {
+			p.items = append(p.items, pickItem{n: n, title: m.linkTitle(n, info), detail: shortURL(l.url), link: l})
 		}
-		p.items = append(p.items, pickItem{title: title, detail: detail, link: l})
+	}
+	if len(p.items) == 0 {
+		m.status = "no safe links in this message"
+		return m, nil
 	}
 	m.picker, m.mode = p, mPicker
 	return m, nil
@@ -152,14 +165,18 @@ func (m Model) keyPicker(s string) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	if p.kind == "links" {
+		if len(s) == 1 && s[0] >= '0' && s[0] <= '9' && (p.num != "" || s != "0") {
+			p.num += s
+			n, _ := strconv.Atoi(p.num)
+			if n*10 > len(m.links) { // no longer number starts with these digits
+				return m.openLinkNumber(p)
+			}
+			num := p.num
+			return m, tea.Tick(600*time.Millisecond, func(time.Time) tea.Msg { return linkNumTick{p, num} })
+		}
 		switch s {
 		case "enter", "o":
-			m.picker, m.mode = nil, mNormal
-			if err := openExternal(it.link.url); err != nil {
-				m.err = err.Error()
-				return m, nil
-			}
-			m.status = "opened " + ansi.Truncate(it.link.url, 60, "…")
+			return m.openLink(it.link)
 		case "y":
 			if err := exec.Command("wl-copy", it.link.url).Run(); err != nil {
 				m.err = "copy: " + err.Error()
@@ -393,13 +410,40 @@ func cacheDir() string {
 	return filepath.Join(d, "lazythunder")
 }
 
+func (m Model) openLink(l link) (tea.Model, tea.Cmd) {
+	m.picker, m.mode = nil, mNormal
+	if err := openExternal(l.url); err != nil {
+		m.err = err.Error()
+		return m, nil
+	}
+	m.status = "opened " + ansi.Truncate(l.url, 60, "…")
+	return m, nil
+}
+
+// openLinkNumber opens the link whose number was typed in the picker.
+func (m Model) openLinkNumber(p *picker) (tea.Model, tea.Cmd) {
+	n, _ := strconv.Atoi(p.num)
+	p.num = ""
+	for _, it := range p.items {
+		if it.n == n {
+			return m.openLink(it.link)
+		}
+	}
+	m.status = fmt.Sprintf("no safe link [%d]", n)
+	return m, nil
+}
+
 func (m Model) pickerLines(w int) []string {
 	p := m.picker
 	from, to := window(len(p.items), p.cur, m.bottomHeight()-4)
 	var lines []string
 	for i := from; i < to; i++ {
 		it := p.items[i]
-		line := fmt.Sprintf("%3d  %s  %s", i+1, render.Sanitize(it.title), dim.Render(render.Sanitize(it.detail)))
+		n := i + 1
+		if p.kind == "links" {
+			n = it.n
+		}
+		line := fmt.Sprintf("%3d  %s  %s", n, render.Sanitize(it.title), dim.Render(render.Sanitize(it.detail)))
 		if i == p.cur {
 			line = highlight(line, w, true)
 		}
@@ -411,7 +455,7 @@ func (m Model) pickerLines(w int) []string {
 func (m Model) pickerHelp() string {
 	switch m.picker.kind {
 	case "links":
-		return "enter open · y copy · esc close"
+		return "number or enter opens · y copy · esc close"
 	case "folders":
 		return "enter open · esc close"
 	case "move":

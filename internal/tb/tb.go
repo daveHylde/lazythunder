@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/mail"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -212,6 +213,48 @@ func (c *Client) Search(ctx context.Context, query string, o SearchOpts) (p Page
 	return p, c.Run(ctx, &p, args...)
 }
 
+// SearchHeaders matches query against sender and subject over all time,
+// newest first. These native header queries take a second or two, unlike
+// the full-text index, so search shows them first.
+func (c *Client) SearchHeaders(ctx context.Context, query string, unread bool) ([]Message, error) {
+	opts := []SearchOpts{{From: query}, {Subject: query}}
+	pages := make([]Page, len(opts))
+	errs := make([]error, len(opts))
+	var wg sync.WaitGroup
+	for i, o := range opts {
+		o.Unread, o.Limit = unread, 500
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			pages[i], errs[i] = c.Search(ctx, "", o)
+		}()
+	}
+	wg.Wait()
+	var all []Message
+	for _, p := range pages {
+		all = append(all, p.Messages...)
+	}
+	all = MergeNewest(nil, all)
+	if errs[0] != nil && errs[1] != nil {
+		return nil, errors.Join(errs...)
+	}
+	return all, errors.Join(errs...)
+}
+
+// MergeNewest adds more to have without duplicates (by id), newest first.
+func MergeNewest(have, more []Message) []Message {
+	seen := map[int]bool{}
+	out := make([]Message, 0, len(have)+len(more))
+	for _, m := range append(append([]Message{}, have...), more...) {
+		if !seen[m.ID] {
+			seen[m.ID] = true
+			out = append(out, m)
+		}
+	}
+	sortNewestFirst(out)
+	return out
+}
+
 // Recent returns a folder's messages older than before (zero = now), newest
 // first, plus the cursor for the next page. `tb list --sort` sorts the whole
 // folder in the add-on (~20s for 26k messages), while date-bounded searches
@@ -307,6 +350,23 @@ func sortNewestFirst(ms []Message) {
 
 func (c *Client) Read(ctx context.Context, id int) (m FullMessage, err error) {
 	return m, c.Run(ctx, &m, "read", strconv.Itoa(id), "--full")
+}
+
+// Headers returns a message's RFC 822 headers (e.g. List-Unsubscribe), which
+// the JSON reads don't expose.
+func (c *Client) Headers(ctx context.Context, id int) (mail.Header, error) {
+	var r struct {
+		Raw string `json:"raw"`
+	}
+	if err := c.Run(ctx, &r, "read", strconv.Itoa(id), "--raw"); err != nil {
+		return nil, err
+	}
+	head, _, _ := strings.Cut(strings.ReplaceAll(r.Raw, "\r\n", "\n"), "\n\n")
+	msg, err := mail.ReadMessage(strings.NewReader(head + "\n\n"))
+	if err != nil {
+		return nil, fmt.Errorf("message headers: %w", err)
+	}
+	return msg.Header, nil
 }
 
 func (c *Client) Thread(ctx context.Context, id int) ([]Message, error) {

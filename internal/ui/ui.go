@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"sort"
 	"strings"
 	"time"
 
@@ -67,11 +66,12 @@ type Model struct {
 	prevView  listView // restored when leaving search results
 	unread    bool     // unread-only filter
 
-	msgs    []tb.Message
-	mcur    int
-	hasMore bool
-	before  time.Time // date cursor for the next page
-	listSeq int
+	msgs       []tb.Message
+	mcur       int
+	hasMore    bool
+	before     time.Time // date cursor for the next page
+	listSeq    int
+	searchLeft int // search halves still running
 
 	preview    viewport.Model
 	full       *tb.FullMessage
@@ -193,6 +193,7 @@ func Run(c *tb.Client, ag *agent.Agent) error {
 	defer stop()
 	go m.sum.run(ctx, func(hdr string) { prog.Send(summaryMsg{hdr}) })
 	_, err := prog.Run()
+	os.Stdout.WriteString(autowrapOn)
 	return err
 }
 
@@ -235,12 +236,19 @@ func (m *Model) loadList(appendPage bool) tea.Cmd {
 	seq, unread, ctx, c := m.listSeq, m.unread, m.ctx, m.c
 	if m.view.folderIDs == nil {
 		q := m.view.query
-		return func() tea.Msg {
-			// shortcut: one page of search hits; tb search has no offset paging
+		m.msgs, m.mcur, m.searchLeft = nil, 0, 2
+		// Sender and subject hits (fast, all time) come first; body hits from the
+		// slower full-text index are merged in when they arrive.
+		headers := func() tea.Msg {
+			ms, err := c.SearchHeaders(ctx, q, unread)
+			return listMsg{seq: seq, msgs: ms, err: err}
+		}
+		content := func() tea.Msg {
+			// shortcut: one page of full-text hits in the last 90 days; tb search has no offset paging
 			p, err := c.Search(ctx, q, tb.SearchOpts{Unread: unread, Limit: pageSize})
-			sort.SliceStable(p.Messages, func(i, j int) bool { return p.Messages[i].Date.After(p.Messages[j].Date) })
 			return listMsg{seq: seq, msgs: p.Messages, err: err}
 		}
+		return tea.Batch(headers, content)
 	}
 	ids, before := m.view.folderIDs, time.Time{}
 	if appendPage {
@@ -328,9 +336,28 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.tab = min(m.tab, len(m.acctOrder))
 		return m, nil
+	case unsubOptsMsg:
+		if x, ok := m.selected(); !ok || x.ID != msg.msg.ID || m.mode != mNormal {
+			return m, nil // moved on meanwhile
+		}
+		return m.confirmUnsubscribe(msg)
+	case linkNumTick:
+		if m.mode == mPicker && m.picker == msg.p && msg.p.num == msg.num {
+			return m.openLinkNumber(msg.p)
+		}
+		return m, nil
 	case listMsg:
 		if msg.seq != m.listSeq {
 			return m, nil
+		}
+		if m.view.folderIDs == nil { // search: the two halves arrive in either order
+			if m.searchLeft == 2 {
+				m.err = ""
+			}
+			if msg.err != nil {
+				m.err = msg.err.Error()
+			}
+			return m.searchResults(msg)
 		}
 		m.err = ""
 		if msg.err != nil {
@@ -470,7 +497,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		text := render.Text(msg.text, m.attVP.Width)
 		if msg.html {
-			text = render.HTML(msg.text, render.Opts{Width: m.attVP.Width, Styled: true, Links: true})
+			text = render.HTML(msg.text, render.Opts{Width: m.attVP.Width, Styled: true})
 		}
 		m.attTitle = msg.title
 		m.attVP.SetContent(text)
@@ -665,6 +692,32 @@ func (m Model) openFolder(f tb.Folder) (tea.Model, tea.Cmd) {
 	return m.show(listView{title: m.accounts[f.AccountID].Name + " › " + f.Name, folderIDs: []string{f.ID}, accountID: f.AccountID})
 }
 
+// searchResults merges one half of a search (header or content hits) into the
+// list, newest first, keeping the cursor on the same message.
+func (m Model) searchResults(msg listMsg) (tea.Model, tea.Cmd) {
+	var cur int
+	if x, ok := m.selected(); ok {
+		cur = x.ID
+	}
+	m.msgs = tb.MergeNewest(m.msgs, msg.msgs)
+	m.mcur = 0
+	for i, x := range m.msgs {
+		if x.ID == cur {
+			m.mcur = i
+		}
+	}
+	m.searchLeft--
+	m.status = fmt.Sprintf("%d messages", len(m.msgs))
+	if m.searchLeft > 0 {
+		m.status += " · searching message text…"
+	}
+	cmds := []tea.Cmd{m.loadReplyStatus(msg.msgs)}
+	if cur == 0 || len(m.msgs) > 0 && m.msgs[m.mcur].ID != cur {
+		cmds = append(cmds, m.schedulePreview())
+	}
+	return m, tea.Batch(cmds...)
+}
+
 func (m Model) show(v listView) (tea.Model, tea.Cmd) {
 	m.view, m.msgs, m.mcur = v, nil, 0
 	m.viewGen++
@@ -782,7 +835,11 @@ func (m Model) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 
-	switch m.focus {
+	focus := m.focus
+	if s == "pgdown" || s == "pgup" { // page keys always scroll the open message
+		focus = pDetail
+	}
+	switch focus {
 	case pMessages:
 		return m.keyMessages(s)
 	default:
@@ -909,6 +966,8 @@ func (m Model) keyMessageActions(s string, passthrough tea.Cmd) (tea.Model, tea.
 			}
 			return nil
 		})
+	case "U":
+		return m.startUnsubscribe(x)
 	case "s":
 		return m.askAgent(fmt.Sprintf("Summarize message id %d. If it is part of a thread, read the thread first and summarize the whole conversation. Then list any action items for me.", x.ID))
 	case "w":
@@ -948,7 +1007,7 @@ func (m Model) keyInput(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.prevView = m.view
 			}
 			m.focus = pMessages
-			return m.show(listView{title: fmt.Sprintf("Search: %s · last %s (esc to go back)", v, tb.SearchWindow), query: v})
+			return m.show(listView{title: fmt.Sprintf("Search: %s · sender/subject: all · text: last %s (esc back)", v, tb.SearchWindow), query: v})
 		}
 		if m.inputFor == "reply" {
 			return m.askAgent(fmt.Sprintf("Write a reply to message id %d. What I want to say, in short: %s\n"+
@@ -1119,8 +1178,9 @@ func (m *Model) edit() tea.Cmd {
 	if editor == "" {
 		editor = "vi"
 	}
-	parts := append(strings.Fields(editor), path)
-	return tea.ExecProcess(exec.Command(parts[0], parts[1:]...), func(err error) tea.Msg {
+	// the editor gets normal autowrap; the next frame turns it off again
+	parts := append([]string{"-c", `printf '\033[?7h'; exec "$@"`, "sh"}, append(strings.Fields(editor), path)...)
+	return tea.ExecProcess(exec.Command("sh", parts...), func(err error) tea.Msg {
 		return editedMsg{path, err}
 	})
 }
