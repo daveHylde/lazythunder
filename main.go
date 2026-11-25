@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/davidhyldgaard/lazythunder/internal/agent"
-	"github.com/davidhyldgaard/lazythunder/internal/tb"
-	"github.com/davidhyldgaard/lazythunder/internal/ui"
+	"github.com/daveHylde/lazythunder/internal/agent"
+	"github.com/daveHylde/lazythunder/internal/tb"
+	"github.com/daveHylde/lazythunder/internal/ui"
 )
 
 func main() {

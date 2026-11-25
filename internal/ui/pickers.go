@@ -15,8 +15,8 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/ansi"
 
-	"github.com/davidhyldgaard/lazythunder/internal/render"
-	"github.com/davidhyldgaard/lazythunder/internal/tb"
+	"github.com/daveHylde/lazythunder/internal/render"
+	"github.com/daveHylde/lazythunder/internal/tb"
 )
 
 type link struct{ url, label string }

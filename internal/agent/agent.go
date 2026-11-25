@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/davidhyldgaard/lazythunder/internal/tb"
+	"github.com/daveHylde/lazythunder/internal/tb"
 )
 
 type Msg struct {

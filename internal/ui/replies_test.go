@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/davidhyldgaard/lazythunder/internal/tb"
+	"github.com/daveHylde/lazythunder/internal/tb"
 )
 
 func TestMatchReplies(t *testing.T) {

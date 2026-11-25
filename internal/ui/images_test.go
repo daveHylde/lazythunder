@@ -11,8 +11,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/davidhyldgaard/lazythunder/internal/render"
-	"github.com/davidhyldgaard/lazythunder/internal/tb"
+	"github.com/daveHylde/lazythunder/internal/render"
+	"github.com/daveHylde/lazythunder/internal/tb"
 )
 
 // bombPNG is a tiny file whose header claims 50000×50000 pixels.

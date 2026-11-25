@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/davidhyldgaard/lazythunder/internal/agent"
+	"github.com/daveHylde/lazythunder/internal/agent"
 )
 
 func TestMethodsOrder(t *testing.T) {

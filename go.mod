@@ -1,4 +1,4 @@
-module github.com/davidhyldgaard/lazythunder
+module github.com/daveHylde/lazythunder
 
 go 1.26.6
 

@@ -17,8 +17,8 @@ import (
 	"golang.org/x/net/html"
 	"golang.org/x/net/html/atom"
 
-	"github.com/davidhyldgaard/lazythunder/internal/agent"
-	"github.com/davidhyldgaard/lazythunder/internal/render"
+	"github.com/daveHylde/lazythunder/internal/agent"
+	"github.com/daveHylde/lazythunder/internal/render"
 )
 
 type Kind int

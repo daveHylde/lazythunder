@@ -9,8 +9,8 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 
-	"github.com/davidhyldgaard/lazythunder/internal/render"
-	"github.com/davidhyldgaard/lazythunder/internal/tb"
+	"github.com/daveHylde/lazythunder/internal/render"
+	"github.com/daveHylde/lazythunder/internal/tb"
 )
 
 // maxTextWidth caps email text (and the reply/draft text) for readability.

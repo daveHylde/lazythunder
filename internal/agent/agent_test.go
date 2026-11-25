@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/davidhyldgaard/lazythunder/internal/tb"
+	"github.com/daveHylde/lazythunder/internal/tb"
 )
 
 // fakeLLM replies with the scripted assistant messages in order and records requests.

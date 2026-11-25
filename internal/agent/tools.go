@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/davidhyldgaard/lazythunder/internal/render"
-	"github.com/davidhyldgaard/lazythunder/internal/tb"
+	"github.com/daveHylde/lazythunder/internal/render"
+	"github.com/daveHylde/lazythunder/internal/tb"
 )
 
 func fn(name, desc string, props map[string]any, required ...string) map[string]any {

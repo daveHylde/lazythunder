@@ -14,7 +14,7 @@ import (
 	"golang.org/x/net/html"
 	"golang.org/x/net/html/atom"
 
-	"github.com/davidhyldgaard/lazythunder/internal/termimg"
+	"github.com/daveHylde/lazythunder/internal/termimg"
 )
 
 type Opts struct {

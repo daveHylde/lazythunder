@@ -10,9 +10,9 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/davidhyldgaard/lazythunder/internal/render"
-	"github.com/davidhyldgaard/lazythunder/internal/tb"
-	"github.com/davidhyldgaard/lazythunder/internal/unsub"
+	"github.com/daveHylde/lazythunder/internal/render"
+	"github.com/daveHylde/lazythunder/internal/tb"
+	"github.com/daveHylde/lazythunder/internal/unsub"
 )
 
 type unsubOptsMsg struct {

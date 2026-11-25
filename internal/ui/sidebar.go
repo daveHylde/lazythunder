@@ -12,10 +12,10 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 
-	"github.com/davidhyldgaard/lazythunder/internal/agent"
-	"github.com/davidhyldgaard/lazythunder/internal/render"
-	"github.com/davidhyldgaard/lazythunder/internal/tb"
-	"github.com/davidhyldgaard/lazythunder/internal/termimg"
+	"github.com/daveHylde/lazythunder/internal/agent"
+	"github.com/daveHylde/lazythunder/internal/render"
+	"github.com/daveHylde/lazythunder/internal/tb"
+	"github.com/daveHylde/lazythunder/internal/termimg"
 )
 
 const (

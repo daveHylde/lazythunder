@@ -11,8 +11,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/davidhyldgaard/lazythunder/internal/render"
-	"github.com/davidhyldgaard/lazythunder/internal/tb"
+	"github.com/daveHylde/lazythunder/internal/render"
+	"github.com/daveHylde/lazythunder/internal/tb"
 )
 
 // attKind is what lazythunder may do with an attachment.

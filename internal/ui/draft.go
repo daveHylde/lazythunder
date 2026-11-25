@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/davidhyldgaard/lazythunder/internal/tb"
+	"github.com/daveHylde/lazythunder/internal/tb"
 )
 
 const separator = "--- write below this line ---"

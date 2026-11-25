@@ -3,7 +3,7 @@ package ui
 import (
 	"testing"
 
-	"github.com/davidhyldgaard/lazythunder/internal/tb"
+	"github.com/daveHylde/lazythunder/internal/tb"
 )
 
 func TestDraftRoundTrip(t *testing.T) {

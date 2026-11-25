@@ -13,9 +13,9 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/davidhyldgaard/lazythunder/internal/agent"
-	"github.com/davidhyldgaard/lazythunder/internal/render"
-	"github.com/davidhyldgaard/lazythunder/internal/tb"
+	"github.com/daveHylde/lazythunder/internal/agent"
+	"github.com/daveHylde/lazythunder/internal/render"
+	"github.com/daveHylde/lazythunder/internal/tb"
 )
 
 type sumState int
