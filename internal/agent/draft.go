@@ -10,30 +10,39 @@ import (
 
 // Revision is a new version of a draft, with a short note on what changed.
 type Revision struct {
-	Subject string `json:"subject"`
-	To      string `json:"to"`
-	Cc      string `json:"cc"`
-	Body    string `json:"body"`
-	Note    string `json:"note"`
+	Subject string   `json:"subject"`
+	To      string   `json:"to"`
+	Cc      string   `json:"cc"`
+	Body    string   `json:"-"`
+	Lines   []string `json:"lines"` // the body, one line each ("" = blank line)
+	Note    string   `json:"note"`
 }
 
 const revisePrompt = `You write and rewrite an email draft for the user, following their instruction.
 If the draft is empty, write the email from the instruction: it is the gist of what the user wants to say.
 Otherwise carry the instruction out fully: if it asks for shorter, cut words; for more polite, soften the wording; for another language, translate; for different content, change what is said.
+A style instruction ("more formal", "warmer", "shorter") always changes the wording: never return the draft unchanged; if it truly cannot change, say why in the note.
 Keep what the instruction does not touch: the facts, numbers, names, [placeholders], greeting and sign-off style.
 The guide's template shows the shape only: never output its <angle-bracket> markers; use the names already in the draft.
 Do not invent facts, dates, prices or promises; leave a clear [placeholder] for anything missing.
-Return the whole new body as plain text, without quoted text from the original email. Keep the subject unless the instruction is about it.
+Return the whole new body in "lines", one string per line and "" for a blank line between paragraphs, without quoted text from the original email. Keep the subject unless the instruction is about it.
 Keep to and cc unless the instruction changes the recipients.
+changes: first list the concrete edits you will make (e.g. "Hei Kari → Kjære Kari", "add a sentence thanking her for the invitation"); then write lines that make exactly those edits.
 note: what you did in at most 10 words, e.g. "draft written" or "translated to English, cut 2 sentences".
-The user's reply guide, for tone and form:
+The user's reply guide below sets the defaults for a first draft; an instruction always overrides it (a "warmer, longer" or "more formal" request wins over the guide's length and tone).
+Reply guide:
 `
 
 var reviseSchema = map[string]any{
 	"type": "object",
-	"properties": map[string]any{"subject": map[string]any{"type": "string"}, "to": map[string]any{"type": "string"},
-		"cc": map[string]any{"type": "string"}, "body": map[string]any{"type": "string"}, "note": map[string]any{"type": "string"}},
-	"required": []string{"subject", "to", "cc", "body", "note"},
+	// "changes" sorts before "lines" in the JSON schema, so the model plans
+	// concrete edits before writing: without it the local model echoed the
+	// draft for style instructions while claiming it had changed it.
+	"properties": map[string]any{"changes": map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+		"subject": map[string]any{"type": "string"}, "to": map[string]any{"type": "string"},
+		"cc": map[string]any{"type": "string"}, "lines": map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+		"note": map[string]any{"type": "string"}},
+	"required": []string{"changes", "subject", "to", "cc", "lines", "note"},
 }
 
 // ReviseDraft writes (empty body) or rewrites draft d following instruction.
@@ -77,11 +86,9 @@ func (a *Agent) ReviseDraft(ctx context.Context, d tb.Draft, original string, hi
 	var r Revision
 	err := a.structured(ctx, "draft", revisePrompt+ReplyGuide(), user.String(), reviseSchema, 500+len(body), &r)
 	r.Subject, r.To, r.Cc = noThoughts(r.Subject), noThoughts(r.To), noThoughts(r.Cc)
-	// Seen live: the model writes "\n\fredag" for a new paragraph, and JSON reads "\f" as a
-	// form feed. Form feeds and backspaces never belong in a mail: give the letter back,
-	// capitalized as it starts a paragraph.
-	r.Body = strings.NewReplacer("\f", "\nF", "\b", "\nB").Replace(r.Body)
-	r.Body, r.Note = noThoughts(r.Body), noThoughts(r.Note)
+	// Lines, not one string: asked for "\n" inside a JSON string, the local model
+	// wrote "\fredag" for a new paragraph (a form feed eating the F).
+	r.Body, r.Note = noThoughts(strings.Join(r.Lines, "\n")), noThoughts(r.Note)
 	if err == nil && r.Body == "" {
 		err = fmt.Errorf("the model returned an empty draft")
 	}

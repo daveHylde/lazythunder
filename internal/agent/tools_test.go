@@ -524,7 +524,7 @@ func TestSummarizeKeepsOnlyCodesInTheEmail(t *testing.T) {
 func TestReviseDraft(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir()) // the default reply guide, not the user's
 	srv, reqs := llm(t, func(int) string {
-		return choice(`{"content":"{\"subject\":\"Changed\",\"to\":\"evil@x\",\"cc\":\"\",\"body\":\"  Hei,\\n\\nKort versjon.\\n\\nMvh\\nDavid  \",\"note\":\"<|channel>thought\\nhmm<channel|>cut 2 sentences\"}"}`)
+		return choice(`{"content":"{\"subject\":\"Changed\",\"to\":\"evil@x\",\"cc\":\"\",\"lines\":[\"Hei,\",\"\",\"Kort versjon.\",\"\",\"Mvh\",\"David\"],\"note\":\"<|channel>thought\\nhmm<channel|>cut 2 sentences\"}"}`)
 	})
 	a := &Agent{URL: srv.URL, HTTP: srv.Client()}
 	d := tb.Draft{Kind: tb.Reply, ReplyTo: 5, Subject: "Re: Black Friday", Body: "Hei,\n\nLang tekst.\n\nMvh\nDavid"}
@@ -545,7 +545,9 @@ func TestReviseDraft(t *testing.T) {
 			t.Errorf("prompt lacks %q", want)
 		}
 	}
-	srv2, _ := llm(t, func(int) string { return choice(`{"content":"{\"subject\":\"x\",\"body\":\"<think>only thoughts\"}"}`) })
+	srv2, _ := llm(t, func(int) string {
+		return choice(`{"content":"{\"subject\":\"x\",\"lines\":[\"<think>only thoughts\"]}"}`)
+	})
 	a.URL = srv2.URL
 	if _, err := a.ReviseDraft(context.Background(), tb.Draft{Body: "y"}, "", nil, "z"); err == nil {
 		t.Error("an empty revision must be an error, not a blank draft")
@@ -555,7 +557,7 @@ func TestReviseDraft(t *testing.T) {
 func TestReviseDraftNewMailFromGist(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	srv, reqs := llm(t, func(int) string {
-		return choice(`{"content":"{\"subject\":\"Friday\",\"to\":\"bob@x.no\",\"cc\":\"\",\"body\":\"Hi Bob,\\n\\fredag works\",\"note\":\"\"}"}`)
+		return choice(`{"content":"{\"subject\":\"Friday\",\"to\":\"bob@x.no\",\"cc\":\"\",\"lines\":[\"Hi Bob,\",\"\",\"Fredag works\"],\"note\":\"\"}"}`)
 	})
 	a := &Agent{URL: srv.URL, HTTP: srv.Client()}
 	r, err := a.ReviseDraft(context.Background(), tb.Draft{Kind: tb.NewMail}, "", nil, "tell bob@x.no friday works")

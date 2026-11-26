@@ -27,6 +27,7 @@ func composer(t *testing.T, revs ...agent.Revision) (*agent.Agent, func() []stri
 		prompts = append(prompts, req.Messages[1].Content)
 		rev := revs[min(len(prompts), len(revs))-1]
 		mu.Unlock()
+		rev.Lines = strings.Split(rev.Body, "\n") // the model answers in lines
 		content, _ := json.Marshal(rev)
 		out, _ := json.Marshal(map[string]any{"choices": []any{map[string]any{"message": map[string]any{"content": string(content)}}}})
 		w.Write(out)
