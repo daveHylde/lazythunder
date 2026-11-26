@@ -72,7 +72,8 @@ type ConvMsg struct {
 
 // Conversation returns the messages of the conversation (Thunderbird's own
 // threading) that headerMessageID belongs to, oldest first, one per
-// Message-ID. Nil when gloda has not indexed that message (yet).
+// Message-ID (its inbox copy when it has one). Nil when gloda has not indexed
+// that message (yet).
 func Conversation(ctx context.Context, dbPath, headerMessageID string) ([]ConvMsg, error) {
 	ms, err := conversation(ctx, dbPath, headerMessageID)
 	if err != nil && retryable(err) && ctx.Err() == nil {
@@ -100,24 +101,31 @@ func conversation(ctx context.Context, dbPath, hdr string) ([]ConvMsg, error) {
 	}
 	defer rows.Close()
 	var out []ConvMsg
-	seen := map[string]bool{} // Gmail keeps copies in several folders
+	seen := map[string]int{} // index in out: Gmail keeps copies in several folders
 	for rows.Next() {
 		var id, uri, author, subject sql.NullString
 		var date sql.NullInt64
 		if err := rows.Scan(&id, &uri, &date, &author, &subject); err != nil {
 			return nil, fmt.Errorf("gloda conversation: %w", err)
 		}
-		if seen[id.String] {
+		m := ConvMsg{Hit{id.String, folderPath(uri.String), uri.String, time.UnixMicro(date.Int64)}, author.String, subject.String}
+		if i, dup := seen[id.String]; dup {
+			if !out[i].InInbox() && m.InInbox() {
+				out[i] = m
+			}
 			continue
 		}
-		seen[id.String] = true
-		out = append(out, ConvMsg{Hit{id.String, folderPath(uri.String), uri.String, time.UnixMicro(date.Int64)}, author.String, subject.String})
+		seen[id.String] = len(out)
+		out = append(out, m)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("gloda conversation: %w", err)
 	}
 	return out[max(0, len(out)-200):], nil
 }
+
+// InInbox reports whether the message is in an inbox (IMAP INBOX or a local Inbox).
+func (h Hit) InInbox() bool { return strings.EqualFold(h.FolderPath, "/INBOX") }
 
 // open opens the database read-only. Per call: an immutable connection never
 // revalidates its page cache, so a pooled one would mix stale pages with

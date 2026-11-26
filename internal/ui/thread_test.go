@@ -12,7 +12,7 @@ import (
 )
 
 func threadItem(hdr, author string, h int) tb.ThreadItem {
-	return tb.ThreadItem{Hit: gloda.Hit{HeaderMessageID: hdr, Date: t0.Add(time.Duration(h) * time.Hour)}, Author: author, Subject: "Meeting"}
+	return tb.ThreadItem{Hit: gloda.Hit{HeaderMessageID: hdr, FolderPath: "/INBOX", Date: t0.Add(time.Duration(h) * time.Hour)}, Author: author, Subject: "Meeting"}
 }
 
 // openWithThread opens the list's message at index cur and gives it a conversation.
@@ -38,7 +38,7 @@ func TestThreadBoxListsConversationAboveActionItems(t *testing.T) {
 	if !strings.Contains(s, "Thread (3) · t+n opens") {
 		t.Fatalf("no thread box:\n%s", s)
 	}
-	for _, want := range []string{" 1 ", "Bob B", " 2 ", "Alice", " 3 ", "carol@x.no"} {
+	for _, want := range []string{" 1 ", "carol@x.no", " 2 ", "Alice", " 3 ", "Bob B"} { // newest first
 		if !strings.Contains(s, want) {
 			t.Fatalf("thread box lacks %q:\n%s", want, s)
 		}
@@ -57,12 +57,15 @@ func TestThreadKeyJumpsWithinList(t *testing.T) {
 	items := []tb.ThreadItem{threadItem("h3", "Alice", -3), threadItem("h1", "Alice", -1)}
 	m := openWithThread(t, 2, items)
 	m = press(t, m, "t")
-	if m.picker == nil || m.picker.kind != "thread" || m.picker.cur != 0 {
+	if m.picker == nil || m.picker.kind != "thread" {
 		t.Fatalf("t did not open the thread picker on the open message: %+v", m.picker)
 	}
-	m, _ = update(m, keyMsg("2")) // 2 items: one digit is final
+	if m.picker.cur != 1 {
+		t.Fatalf("picker starts on %d, want the open message (2nd, newest first)", m.picker.cur)
+	}
+	m, _ = update(m, keyMsg("1")) // 2 items: one digit is final; 1 is the newest
 	if m.picker != nil || m.mcur != 0 {
-		t.Fatalf("t2 should move the cursor to h1 (index 0); mcur %d picker %v", m.mcur, m.picker)
+		t.Fatalf("t1 should move the cursor to h1 (index 0); mcur %d picker %v", m.mcur, m.picker)
 	}
 }
 
@@ -71,7 +74,7 @@ func TestThreadItemOutsideListOpensThreadView(t *testing.T) {
 	m := openWithThread(t, 2, items)
 	prev := m.view.title
 	m = press(t, m, "t")
-	m, _ = update(m, keyMsg("1"))
+	m, _ = update(m, keyMsg("2")) // the older one
 	if m.view.thread == nil || !strings.HasPrefix(m.view.title, "Thread: Meeting") || m.view.focus != "sent@x" {
 		t.Fatalf("view %+v", m.view)
 	}
@@ -92,7 +95,7 @@ func TestThreadViewFromSearchReturnsToSearch(t *testing.T) {
 	m := openWithThread(t, 2, items)
 	m.view = listView{title: "Search: meeting · all mail (esc back)", query: "meeting"}
 	m = press(t, m, "t")
-	m, _ = update(m, keyMsg("1"))
+	m, _ = update(m, keyMsg("2")) // the older one
 	if m.view.thread == nil {
 		t.Fatalf("no thread view: %+v", m.view)
 	}
@@ -112,5 +115,21 @@ func TestThreadBoxShrinksOnShortSidebar(t *testing.T) {
 	sec := func(s string) string { return s }
 	if got := len(m.threadLines(40, 3, sec)); got > 1+3+2 { // heading, 3 rows, older/newer markers
 		t.Fatalf("%d lines for 3 rows", got)
+	}
+}
+
+func TestThreadBoxLeavesOutYourReplies(t *testing.T) {
+	sent := threadItem("mine@x", "Me", -2)
+	sent.FolderPath = "/INBOX/Sent"
+	items := []tb.ThreadItem{threadItem("x0", "Bob", -5), sent, threadItem("h3", "Alice", -3)}
+	m := openWithThread(t, 2, items)
+	got := m.threadItems()
+	if len(got) != 2 || got[0].HeaderMessageID != "h3" || got[1].HeaderMessageID != "x0" {
+		t.Fatalf("want [h3 x0] (inbox only, newest first), got %+v", got)
+	}
+	// Only the open message and your reply: no box.
+	m = openWithThread(t, 2, []tb.ThreadItem{sent, threadItem("h3", "Alice", -3)})
+	if m.threadItems() != nil {
+		t.Fatal("a box for a message whose only thread mate is your reply")
 	}
 }

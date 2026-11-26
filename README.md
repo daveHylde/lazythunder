@@ -49,9 +49,9 @@ gives you a fast, keyboard-only way to get through it all.
   headers, and a sidebar **Action items** list: action
   items tied to the link that does them, followed by every other safe link with a short title of
   what it opens. Type `o` and the number to open one.
-- **The whole conversation at a glance.** Above the action items, a **Thread** box lists every
-  message of the conversation (your replies in Sent too), the open one highlighted. Type `t` and
-  the number to jump to one.
+- **The whole conversation at a glance.** Above the action items, a **Thread** box lists the
+  conversation's inbox messages, newest first, the open one highlighted; your own replies show at
+  the top of the message they answer. Type `t` and the number to jump to one.
 - **Triage at a glance.** Every summarized message gets a short dim tag before its subject:
   `reply` (needs your answer), `act` (something to do), `news`, `rcpt` (receipts), `note`
   (notifications) or `spam`, and `!` when it is urgent. Plain FYI mail gets no tag.

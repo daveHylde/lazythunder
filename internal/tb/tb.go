@@ -475,12 +475,13 @@ func (c *Client) Conversation(ctx context.Context, hdr string) ([]ThreadItem, er
 	return gloda.Conversation(ctx, db, hdr)
 }
 
-// ThreadMessages resolves a conversation's items to messages, passing batches
-// (newest first within a batch) to emit, which returns false to stop.
+// ThreadMessages resolves a conversation's items to messages in the order
+// given, passing batches (newest first within a batch) to emit, which
+// returns false to stop.
 func (c *Client) ThreadMessages(ctx context.Context, items []ThreadItem, emit func([]Message) bool) error {
 	hits := make([]gloda.Hit, len(items))
 	for i, it := range items {
-		hits[len(items)-1-i] = it.Hit // newest first, like the lists
+		hits[i] = it.Hit
 	}
 	_, err := c.resolveHits(ctx, hits, SearchOpts{IncludeJunk: true}, len(hits), emit)
 	return err

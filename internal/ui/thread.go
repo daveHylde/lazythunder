@@ -33,12 +33,23 @@ func (m Model) loadThread() tea.Cmd {
 	}
 }
 
-// threadItems is the open message's conversation, when it has more than one message.
+// threadItems is the open message's conversation as received, newest first:
+// inbox messages plus the open one. Your replies are left out; they show at
+// the top of the message they answer. Nil when that leaves just one message.
 func (m Model) threadItems() []tb.ThreadItem {
-	if m.full == nil || m.threadHdr != m.full.HeaderMessageID || len(m.thread) < 2 {
+	if m.full == nil || m.threadHdr != m.full.HeaderMessageID {
 		return nil
 	}
-	return m.thread
+	var out []tb.ThreadItem
+	for i := len(m.thread) - 1; i >= 0; i-- {
+		if it := m.thread[i]; it.InInbox() || sameMsgID(it.HeaderMessageID, m.full.HeaderMessageID) {
+			out = append(out, it)
+		}
+	}
+	if len(out) < 2 {
+		return nil
+	}
+	return out
 }
 
 // threadIndex is the position of the open message in its conversation (-1: not found).
@@ -77,7 +88,7 @@ func (m Model) threadLines(w, rows int, section func(string) string) []string {
 	from, to := window(len(items), max(cur, 0), rows)
 	lines := []string{section(fmt.Sprintf("Thread (%d) · t+n opens", len(items)))}
 	if from > 0 {
-		lines = append(lines, dim.Render(fmt.Sprintf("   … %d older", from)))
+		lines = append(lines, dim.Render(fmt.Sprintf("   … %d newer", from)))
 	}
 	for i := from; i < to; i++ {
 		line := ansi.Truncate(threadLine(i+1, items[i]), w, "…")
@@ -89,7 +100,7 @@ func (m Model) threadLines(w, rows int, section func(string) string) []string {
 		lines = append(lines, line)
 	}
 	if to < len(items) {
-		lines = append(lines, dim.Render(fmt.Sprintf("   … %d newer", len(items)-to)))
+		lines = append(lines, dim.Render(fmt.Sprintf("   … %d older", len(items)-to)))
 	}
 	return lines
 }
@@ -126,7 +137,7 @@ func (m Model) openThreadItem(it tb.ThreadItem, items []tb.ThreadItem) (tea.Mode
 		back = *back.back
 	}
 	m.focus = pMessages
-	subject := bg.OneLine(items[0].Subject)
+	subject := bg.OneLine(items[len(items)-1].Subject) // the oldest: no Re: pile-up
 	return m.show(listView{title: fmt.Sprintf("Thread: %s (esc back)", subject), thread: items, focus: it.HeaderMessageID, back: &back})
 }
 

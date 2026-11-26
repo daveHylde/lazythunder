@@ -171,6 +171,9 @@ func TestConversation(t *testing.T) {
 	if len(got) != 2 || got[0].HeaderMessageID != "m1@x" || got[1].HeaderMessageID != "r1@x" {
 		t.Fatalf("want [m1 r1] oldest first, one per Message-ID, deleted left out; got %+v", got)
 	}
+	if !got[1].InInbox() { // r1 is in INBOX and All Mail: the inbox copy wins
+		t.Fatalf("kept the %s copy, want the inbox one", got[1].FolderPath)
+	}
 	if got[1].Author != "Kari <k@x>" || got[1].Subject != "Re: Invoice" || got[1].FolderPath != "/INBOX" {
 		t.Fatalf("details %+v", got[1])
 	}
