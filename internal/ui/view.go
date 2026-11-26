@@ -97,6 +97,9 @@ func (m Model) View() string {
 		box := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(accent).Padding(1, 2).Render(helpText)
 		return lipgloss.Place(m.w, m.h, lipgloss.Center, lipgloss.Center, box)
 	}
+	if m.draft != nil && (m.mode == mDraft || m.mode == mConfirm) {
+		return strings.Join([]string{autowrapOff + m.viewTabs(), m.viewCompose(), m.viewBottom()}, "\n")
+	}
 	top := m.viewMessages(m.w, m.topHeight())
 	// Autowrap off (DECAWM): a glyph the terminal draws wider than we measured
 	// (emoji, newer Unicode) clips at the edge instead of wrapping and
@@ -220,9 +223,6 @@ func noteTag(n store.Meta) string {
 
 func (m Model) viewDetail(w, h int) string {
 	focused := m.focus == pDetail
-	if m.draft != nil && (m.mode == mDraft || m.mode == mConfirm || m.mode == mInput && m.inputFor == "revise") {
-		return panel("[2] "+kindName(m.draft.Kind), m.draftLines(w-2), w, h, true)
-	}
 	if m.accts != nil && m.draft == nil && (m.mode == mAccounts || m.mode == mConfirm) {
 		title := "[2] Accounts"
 		if m.accts.form != nil {
@@ -325,12 +325,10 @@ func (m Model) draftLines(w int) []string {
 	for i := range head {
 		head[i] = dim.Render(render.Sanitize(head[i]))
 	}
-	help := "e edit · : revise with AI · enter save draft · S send · x discard"
-	if len(m.draftUndo) > 0 {
-		help = "e edit · : revise again · u undo · enter save draft · S send · x discard"
+	if strings.TrimSpace(d.Body) == "" {
+		return append(head, "", dim.Render("(nothing written yet: tell the assistant what to say, or ctrl+e to write it yourself)"))
 	}
-	help = bold.Render(help)
-	return append(append(append([]string{help, ""}, head...), ""), strings.Split(render.Text(d.Body, min(w, maxTextWidth)), "\n")...)
+	return append(append(head, ""), strings.Split(render.Text(d.Body, min(w, maxTextWidth)), "\n")...)
 }
 
 func (m Model) renderChat() string {
@@ -439,7 +437,11 @@ func (m Model) viewBottom() string {
 	case m.mode == mInput:
 		return ansi.Truncate(m.input.View(), m.w, "")
 	case m.mode == mConfirm && m.confirm != nil:
-		return ansi.Truncate(confirmSt.Render(render.Sanitize(m.confirm.text)+" [y/n]"), m.w, "…")
+		text := render.Sanitize(m.confirm.text)
+		if m.confirm.onNo == nil { // with onNo the text spells out its keys
+			text += " [y/n]"
+		}
+		return ansi.Truncate(confirmSt.Render(text), m.w, "…")
 	}
 	left := render.Sanitize(m.status)
 	if m.err != "" {
@@ -455,6 +457,8 @@ func (m Model) viewBottom() string {
 		hint = "j/k scroll · esc back"
 	case m.mode == mAccounts && m.accts != nil:
 		hint = m.acctHelp()
+	case m.mode == mDraft && m.draft != nil:
+		hint = m.composeHint()
 	default:
 		hint = "l folders · r reply · space select · a archive · d delete · C all read · F5 refresh · : agent · ? help"
 	}
@@ -484,7 +488,7 @@ const helpText = `lazythunder — keys
  message       m  toggle read      S  toggle star (flag)
                a  archive          d, Del  delete (to trash)
                M  move to folder   c  compose new
-               r  reply   R  reply all   f  forward
+               r  reply   R  reply all   f  forward   (open compose mode, below)
                C  mark everything in the folder(s) read
                space  select in the list; m S a d M then act on all selected (esc clears)
                i  view the message's images full screen (sixel/kitty)
@@ -498,11 +502,12 @@ const helpText = `lazythunder — keys
 
  agent         :  ask the agent (it can search, read, and act with your y/n)
                z  summarize selected message/thread
-               W  AI reply from a short intent (follows ~/.config/lazythunder/reply-guide.md)
                esc  back to the email (or cancel a running request)
                X  new conversation
 
- drafts        e edit in $EDITOR · enter save to Drafts · S send · x discard
+ compose       r R f c: type the gist + enter writes the draft (reply-guide.md), each message revises it
+               ctrl+z undo · ctrl+e $EDITOR · pgup pgdown scroll · ctrl+s send · ctrl+d save to Drafts · esc close
+               (AI off: e editor · u undo)
 
  accounts      ctrl+a  accounts screen: a add · e edit servers/identity · D remove (local copy only)
                i add identity · x delete identity · * make identity default · esc close

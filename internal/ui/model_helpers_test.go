@@ -188,7 +188,9 @@ func update(m Model, msg tea.Msg) (Model, tea.Cmd) {
 func keyMsg(s string) tea.KeyMsg {
 	named := map[string]tea.KeyType{"enter": tea.KeyEnter, "esc": tea.KeyEsc, " ": tea.KeySpace,
 		"tab": tea.KeyTab, "delete": tea.KeyDelete, "f5": tea.KeyF5, "ctrl+c": tea.KeyCtrlC,
-		"down": tea.KeyDown, "up": tea.KeyUp, "home": tea.KeyHome, "end": tea.KeyEnd}
+		"down": tea.KeyDown, "up": tea.KeyUp, "home": tea.KeyHome, "end": tea.KeyEnd,
+		"ctrl+s": tea.KeyCtrlS, "ctrl+d": tea.KeyCtrlD, "ctrl+e": tea.KeyCtrlE, "ctrl+z": tea.KeyCtrlZ,
+		"pgup": tea.KeyPgUp, "pgdown": tea.KeyPgDown}
 	if t, ok := named[s]; ok {
 		return tea.KeyMsg{Type: t}
 	}

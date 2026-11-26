@@ -38,7 +38,7 @@ const (
 	mNormal   mode = iota
 	mInput         // text input at the bottom (search or agent prompt)
 	mConfirm       // y/n question
-	mDraft         // reviewing a draft
+	mDraft         // compose mode: the draft and its agent column
 	mPicker        // link or attachment picker in the detail pane
 	mAttView       // previewing an attachment in the detail pane
 	mAccounts      // the accounts screen (ctrl+a)
@@ -123,20 +123,24 @@ type Model struct {
 	agentState string
 	agentStop  context.CancelFunc
 
-	input       textinput.Model
-	replyTarget int    // message id the w prompt is about
-	inputFor    string // "search" or "agent"
-	confirm     *confirmation
-	draft       *tb.Draft
-	draftCtx    string
-	draftFile   string       // edited file kept after a parse error so the text isn't lost
-	submitting  bool         // a save/send is in flight
-	draftGen    int          // bumped per opened draft: a late revision can't land on another one
-	draftUndo   []tb.Draft   // versions before each agent revision (u restores)
-	revising    bool         // an agent revision is in flight
-	pending     *tb.Draft    // agent draft waiting for the current draft to finish
-	moveIDs     []int        // messages the move picker will move
-	marked      map[int]bool // space-selected message ids; actions apply to all of them
+	input      textinput.Model
+	inputFor   string // "search" or "agent"
+	confirm    *confirmation
+	draft      *tb.Draft
+	draftCtx   string
+	draftFile  string          // edited file kept after a parse error so the text isn't lost
+	submitting bool            // a save/send is in flight
+	draftGen   int             // bumped per opened draft: a late revision can't land on another one
+	draftUndo  []tb.Draft      // versions before each revision or edit (ctrl+z restores)
+	draftAsks  []string        // the instruction behind each version in draftUndo, sent as history
+	draftChat  []string        // compose column: "you: …" and "✦ …" notes, never the draft itself
+	draftBase  int             // 1 when the draft opened with a body (the assistant's v1)
+	draftTop   int             // compose: first draft line shown (pgup/pgdown)
+	compose    textinput.Model // compose: the instruction input
+	revising   bool            // an agent revision is in flight
+	pending    *tb.Draft       // agent draft waiting for the current draft to finish
+	moveIDs    []int           // messages the move picker will move
+	marked     map[int]bool    // space-selected message ids; actions apply to all of them
 }
 
 // listView is what the message list shows: one or more folders, or a search.
@@ -154,6 +158,7 @@ type confirmation struct {
 	text  string
 	reply chan bool // agent confirmations
 	onYes tea.Cmd   // local confirmations
+	onNo  tea.Cmd   // set: n runs it and esc just closes the question
 }
 
 // ---- messages ----
@@ -695,6 +700,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case revisedMsg:
 		return m.applyRevision(msg)
+	case saveDraftMsg:
+		if msg.gen != m.draftGen || m.draft == nil {
+			return m, nil
+		}
+		return m.submitDraft(false)
+	case discardMsg:
+		if msg.gen != m.draftGen || m.draft == nil {
+			return m, nil
+		}
+		m = m.closeDraft()
+		if m.draft == nil {
+			m.status = "draft discarded"
+		}
+		return m, nil
 	case submittedMsg:
 		m.submitting = false
 		if msg.err != nil {
@@ -882,7 +901,7 @@ func (m Model) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case mInput:
 		return m.keyInput(k)
 	case mDraft:
-		return m.keyDraft(s)
+		return m.keyDraft(k)
 	case mPicker:
 		return m.keyPicker(s)
 	case mAccounts:
@@ -956,8 +975,7 @@ func (m Model) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.say("(new conversation)")
 		return m, nil
 	case "c":
-		m = m.openDraft(tb.Draft{Kind: tb.NewMail, From: m.defaultIdentity()})
-		return m, m.edit()
+		return m.startCompose(tb.Draft{Kind: tb.NewMail, From: m.defaultIdentity()})
 	case "u":
 		m.unread = !m.unread
 		m.status = map[bool]string{true: "unread only", false: "all messages"}[m.unread]
@@ -1205,8 +1223,7 @@ func (m Model) keyMessageActions(s string, passthrough tea.Cmd) (tea.Model, tea.
 		return m.openMovePicker(acct)
 	case "r", "R", "f":
 		kind := map[string]tb.DraftKind{"r": tb.Reply, "R": tb.ReplyAll, "f": tb.Forward}[s]
-		m = m.openDraft(tb.Draft{Kind: kind, ReplyTo: x.ID})
-		return m, m.edit()
+		return m.startCompose(tb.Draft{Kind: kind, ReplyTo: x.ID})
 	case "o":
 		if m.full == nil || m.full.ID != x.ID {
 			m.status = "open the message first"
@@ -1251,19 +1268,16 @@ func (m Model) keyMessageActions(s string, passthrough tea.Cmd) (tea.Model, tea.
 		return m.startUnsubscribe(x)
 	case "z":
 		return m.askAgent(fmt.Sprintf("Summarize message id %d. If it is part of a thread, read the thread first and summarize the whole conversation. Then list any action items for me.", x.ID))
-	case "W":
-		m.replyTarget = x.ID
-		return m.startInput("reply", "what should the reply say? (short, e.g. \"yes, friday works\")", "")
 	}
 	return m, passthrough
 }
 
 func (m Model) startInput(purpose, placeholder, value string) (tea.Model, tea.Cmd) {
-	if (purpose == "agent" || purpose == "reply") && !m.ag.Enabled() {
+	if purpose == "agent" && !m.ag.Enabled() {
 		m.status = "AI is off (LAZYTHUNDER_LLM_URL=off)"
 		return m, nil
 	}
-	if (purpose == "agent" || purpose == "reply") && m.agentBusy {
+	if purpose == "agent" && m.agentBusy {
 		m.status = m.model() + " is busy (esc to cancel)"
 		return m, nil
 	}
@@ -1277,7 +1291,7 @@ func (m Model) startInput(purpose, placeholder, value string) (tea.Model, tea.Cm
 func (m Model) keyInput(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch k.String() {
 	case "esc":
-		m.mode = m.modeAfterConfirm() // back to the draft when asked from there
+		m.mode = m.modeAfterConfirm()
 		m.input.Blur()
 		return m, nil
 	case "enter":
@@ -1287,23 +1301,12 @@ func (m Model) keyInput(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if v == "" {
 			return m, nil
 		}
-		if m.inputFor == "revise" {
-			if m.draft == nil {
-				return m, nil
-			}
-			return m.revise(v)
-		}
 		if m.inputFor == "search" {
 			if m.view.folderIDs != nil {
 				m.prevView = m.view
 			}
 			m.focus = pMessages
 			return m.show(listView{title: fmt.Sprintf("Search: %s · all mail (esc back)", v), query: v})
-		}
-		if m.inputFor == "reply" {
-			return m.askAgent(fmt.Sprintf("Write a reply to message id %d. What I want to say, in short: %s\n"+
-				"Read the message first (and the thread if there is one), then call propose_draft with kind \"reply\", "+
-				"message_id %d and the finished body, following the reply guide.", m.replyTarget, v, m.replyTarget))
 		}
 		return m.askAgent(v)
 	}
@@ -1380,26 +1383,22 @@ func (m Model) keyConfirm(s string) (tea.Model, tea.Cmd) {
 	if yes {
 		return m, c.onYes
 	}
+	if s != "esc" { // with onNo, esc only closes the question
+		return m, c.onNo
+	}
 	return m, nil
 }
 
 func (m Model) modeAfterConfirm() mode {
 	switch {
 	case m.draft != nil:
-		return mDraft // confirmations raised from the draft screen return to it
+		return mDraft // confirmations raised from compose mode return to it
 	case m.picker != nil:
 		return mPicker
 	case m.accts != nil:
 		return mAccounts
 	}
 	return mNormal
-}
-
-func (m Model) openDraft(d tb.Draft) Model {
-	m.draft, m.draftCtx, m.draftFile, m.mode = &d, m.contextFor(d), "", mDraft
-	m.draftGen++
-	m.draftUndo, m.revising = nil, false
-	return m
 }
 
 // closeDraft ends the current draft and shows a queued agent draft, if any.
@@ -1414,58 +1413,6 @@ func (m Model) closeDraft() Model {
 		return m.openDraft(*p)
 	}
 	return m
-}
-
-func (m Model) keyDraft(s string) (tea.Model, tea.Cmd) {
-	if m.draft == nil {
-		m.mode = mNormal
-		return m, nil
-	}
-	if m.submitting {
-		m.status = "still saving…"
-		return m, nil
-	}
-	d := *m.draft
-	c, ctx := m.c, m.ctx
-	submit := func(send bool) tea.Cmd {
-		return func() tea.Msg { return submittedMsg{send, c.Submit(ctx, d, send)} }
-	}
-	switch s {
-	case ":":
-		return m.startRevise()
-	case "u":
-		return m.undoRevision()
-	case "e":
-		return m, m.edit()
-	case "enter", "D", "S":
-		if m.revising {
-			m.status = "still revising… (wait, or x to discard)"
-			return m, nil
-		}
-		if m.draftFile != "" {
-			m.err = "fix the draft first (e to edit)"
-			return m, nil
-		}
-		if err := validDraft(d); err != nil {
-			m.err = "draft: " + err.Error() + " (e to edit)"
-			return m, nil
-		}
-		if s != "S" {
-			m.submitting, m.status = true, "saving draft…"
-			return m, submit(false)
-		}
-		m.confirm = &confirmation{text: "Send this message now?", onYes: tea.Sequence(
-			func() tea.Msg { return sendingMsg{} }, submit(true))}
-		m.mode = mConfirm
-		return m, nil
-	case "x", "esc":
-		m = m.closeDraft()
-		if m.draft == nil {
-			m.status = "draft discarded"
-		}
-		return m, nil
-	}
-	return m, nil
 }
 
 // edit opens the draft in $VISUAL/$EDITOR, reusing a file that failed to parse.
@@ -1502,7 +1449,7 @@ func (m Model) afterEdit(msg editedMsg) (tea.Model, tea.Cmd) {
 	}
 	m.mode, m.draftFile = mDraft, msg.path // keep the file until it parses
 	if msg.err != nil {
-		m.err = "editor: " + msg.err.Error() + " (e to edit)"
+		m.err = "editor: " + msg.err.Error() + " (ctrl+e to edit)"
 		return m, nil
 	}
 	raw, err := os.ReadFile(msg.path)
@@ -1512,11 +1459,16 @@ func (m Model) afterEdit(msg editedMsg) (tea.Model, tea.Cmd) {
 	}
 	d, err := parseDraft(*m.draft, string(raw))
 	if err != nil {
-		m.err = "draft: " + err.Error() + " (e to edit)"
+		m.err = "draft: " + err.Error() + " (ctrl+e to edit)"
 		return m, nil
 	}
 	os.Remove(msg.path)
-	m.draft, m.draftFile, m.err = &d, "", ""
+	m.draftFile, m.err = "", ""
+	if d != *m.draft { // a hand edit is a version too: ctrl+z undoes it, the agent builds on it
+		m.draftUndo, m.draftAsks = append(m.draftUndo, *m.draft), append(m.draftAsks, editedByHand)
+		m.draft = &d
+		m.draftChat = append(m.draftChat, fmt.Sprintf("✦ edited in your editor (v%d)", m.version()))
+	}
 	return m, nil
 }
 

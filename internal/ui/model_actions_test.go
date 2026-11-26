@@ -195,7 +195,7 @@ func TestKeysNeedingOpenMessage(t *testing.T) {
 }
 
 func TestAIOffKeys(t *testing.T) {
-	for _, k := range []string{":", "W", "z"} {
+	for _, k := range []string{":", "z"} {
 		m := press(t, loaded(t, nil), k) // nil agent: AI off
 		if m.status != "AI is off (LAZYTHUNDER_LLM_URL=off)" || m.mode != mNormal || m.agentBusy {
 			t.Errorf("%s: status %q mode %d", k, m.status, m.mode)
@@ -396,16 +396,16 @@ func TestReplyDraftSave(t *testing.T) {
 		t.Fatalf("err %q draft %+v file %q", m.err, m.draft, m.draftFile)
 	}
 	view := screen(m)
-	for _, want := range []string{"[2] Reply", "e edit · : revise with AI · enter save draft · S send · x discard", "Takk!"} {
+	for _, want := range []string{"[2] Reply · v1", "edited in your editor (v1)", "AI is off", "v1 · u undo · e editor · ctrl+s send · ctrl+d save draft · esc close", "Takk!"} {
 		if !strings.Contains(view, want) {
 			t.Errorf("view lacks %q", want)
 		}
 	}
-	m, cmd = pressCmd(t, m, "enter")
+	m, cmd = pressCmd(t, m, "ctrl+d")
 	if !m.submitting || m.status != "saving draft…" {
 		t.Fatalf("submitting %v status %q", m.submitting, m.status)
 	}
-	if m2 := press(t, m, "x"); m2.draft == nil || m2.status != "still saving…" {
+	if m2 := press(t, m, "esc"); m2.draft == nil || m2.status != "still saving…" {
 		t.Fatal("draft discarded while saving")
 	}
 	sub := run(t, cmd).(submittedMsg)
@@ -425,7 +425,7 @@ func TestForwardDraftSend(t *testing.T) {
 	if m.err != "" || m.draft.To != "bob@y.no" {
 		t.Fatalf("err %q draft %+v", m.err, m.draft)
 	}
-	m, cmd := pressCmd(t, m, "S")
+	m, cmd := pressCmd(t, m, "ctrl+s")
 	if cmd != nil || m.mode != mConfirm || m.confirm.text != "Send this message now?" {
 		t.Fatalf("mode %d", m.mode)
 	}
@@ -453,11 +453,23 @@ func TestSubmitFailureKeepsDraft(t *testing.T) {
 	h.failOp("submit", "SMTP down")
 	m := loaded(t, client)
 	m = openTestDraft(m, tb.Draft{Kind: tb.Reply, ReplyTo: 1, Body: "hi\n"})
-	m, cmd := pressCmd(t, m, "enter")
+	m, cmd := pressCmd(t, m, "ctrl+d")
 	m, _ = update(m, run(t, cmd))
 	if m.draft == nil || m.mode != mDraft || m.submitting || !strings.Contains(statusLine(m), "SMTP down (TEST)") {
 		t.Fatalf("draft %+v mode %d line %q", m.draft, m.mode, statusLine(m))
 	}
+}
+
+// discard closes compose mode: esc, then n on "Save to Drafts?".
+func discard(t *testing.T, m Model) Model {
+	t.Helper()
+	m = press(t, m, "esc")
+	if m.mode != mConfirm || m.confirm.onNo == nil {
+		t.Fatalf("esc did not ask to save (mode %d)", m.mode)
+	}
+	m, cmd := pressCmd(t, m, "n")
+	m, _ = update(m, run(t, cmd))
+	return m
 }
 
 func openTestDraft(m Model, d tb.Draft) Model {
@@ -471,15 +483,15 @@ func TestComposeUsesSelectedAccountIdentity(t *testing.T) {
 		t.Fatalf("draft %+v", m.draft)
 	}
 	m = editDraft(t, m, "--- write below this line ---\nno To\n")
-	if m.err != "draft: To: is empty (e to edit)" || m.draftFile == "" {
+	if m.err != "draft: To: is empty (ctrl+e to edit)" || m.draftFile == "" {
 		t.Fatalf("err %q file %q", m.err, m.draftFile)
 	}
 	file := m.draftFile
-	m = press(t, m, "enter") // the broken file must be fixed first
-	if m.err != "fix the draft first (e to edit)" || m.submitting {
+	m = press(t, m, "ctrl+d") // the broken file must be fixed first
+	if m.err != "fix the draft first (ctrl+e to edit)" || m.submitting {
 		t.Fatalf("err %q", m.err)
 	}
-	m = press(t, m, "x")
+	m = discard(t, m)
 	if m.draft != nil || m.mode != mNormal || m.status != "draft discarded" {
 		t.Fatalf("draft %+v status %q", m.draft, m.status)
 	}
@@ -491,12 +503,12 @@ func TestComposeUsesSelectedAccountIdentity(t *testing.T) {
 func TestDraftEditorErrors(t *testing.T) {
 	m := openTestDraft(loaded(t, nil), tb.Draft{Kind: tb.Reply, ReplyTo: 1})
 	m, _ = update(m, editedMsg{path: "/nonexistent", err: errors.New("exit status 1")})
-	if m.err != "editor: exit status 1 (e to edit)" || m.mode != mDraft {
+	if m.err != "editor: exit status 1 (ctrl+e to edit)" || m.mode != mDraft {
 		t.Fatalf("err %q", m.err)
 	}
 	m = openTestDraft(loaded(t, nil), tb.Draft{Kind: tb.Reply, ReplyTo: 1}) // empty body
-	m = press(t, m, "enter")
-	if m.err != "draft: body is empty (e to edit)" || m.submitting {
+	m = press(t, m, "ctrl+d")
+	if m.err != "draft: body is empty (ctrl+e to edit)" || m.submitting {
 		t.Fatalf("err %q", m.err)
 	}
 	m = editDraft(t, m, "no separator\n")
@@ -504,7 +516,7 @@ func TestDraftEditorErrors(t *testing.T) {
 		t.Fatalf("err %q", m.err)
 	}
 	// edit finishing after the draft was discarded removes the file, changes nothing
-	m = press(t, m, "x")
+	m = discard(t, m)
 	f, _ := os.CreateTemp(t.TempDir(), "late")
 	f.Close()
 	m, _ = update(m, editedMsg{path: f.Name()})
@@ -519,7 +531,7 @@ func TestAgentDraftQueuedBehindOpenDraft(t *testing.T) {
 	if m.draft.Body != "mine\n" || m.pending == nil || !strings.Contains(m.status, "has a draft ready") {
 		t.Fatalf("draft %+v pending %+v status %q", m.draft, m.pending, m.status)
 	}
-	m = press(t, m, "x")
+	m = discard(t, m)
 	if m.draft == nil || m.draft.Body != "agent's\n" || m.mode != mDraft || m.pending != nil {
 		t.Fatalf("queued draft not opened: %+v", m.draft)
 	}

@@ -524,29 +524,46 @@ func TestSummarizeKeepsOnlyCodesInTheEmail(t *testing.T) {
 func TestReviseDraft(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir()) // the default reply guide, not the user's
 	srv, reqs := llm(t, func(int) string {
-		return choice(`{"content":"{\"subject\":\"\",\"body\":\"  Hei,\\n\\nKort versjon.\\n\\nMvh\\nDavid  \"}"}`)
+		return choice(`{"content":"{\"subject\":\"Changed\",\"to\":\"evil@x\",\"cc\":\"\",\"body\":\"  Hei,\\n\\nKort versjon.\\n\\nMvh\\nDavid  \",\"note\":\"<|channel>thought\\nhmm<channel|>cut 2 sentences\"}"}`)
 	})
 	a := &Agent{URL: srv.URL, HTTP: srv.Client()}
-	r, err := a.ReviseDraft(context.Background(), "From: shop\n\nBlack Friday!", "Re: Black Friday", "Hei,\n\nLang tekst.\n\nMvh\nDavid", "kortere")
+	d := tb.Draft{Kind: tb.Reply, ReplyTo: 5, Subject: "Re: Black Friday", Body: "Hei,\n\nLang tekst.\n\nMvh\nDavid"}
+	r, err := a.ReviseDraft(context.Background(), d, "From: shop\n\nBlack Friday!", []string{"ja takk, fredag", "mer formell"}, "kortere")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if r.Body != "Hei,\n\nKort versjon.\n\nMvh\nDavid" || r.Subject != "Re: Black Friday" {
-		t.Fatalf("revision %+v (body trimmed, empty subject keeps the old one)", r)
+	if r.Body != "Hei,\n\nKort versjon.\n\nMvh\nDavid" || r.Subject != "Re: Black Friday" || r.To != "" || r.Note != "cut 2 sentences" {
+		t.Fatalf("revision %+v (body trimmed, a reply keeps subject and recipients, reasoning stripped from the note)", r)
 	}
 	msgs := reqs()[0]["messages"].([]any)
 	system, user := msgs[0].(map[string]any)["content"].(string), msgs[1].(map[string]any)["content"].(string)
 	if !strings.Contains(system, "Language: reply in the language") {
 		t.Error("reply guide not in the prompt")
 	}
-	for _, want := range []string{"Black Friday!", "Lang tekst.", "Instruction: kortere"} {
+	for _, want := range []string{"Black Friday!", "Lang tekst.", "Instruction: kortere", "- ja takk, fredag\n- mer formell\n"} {
 		if !strings.Contains(user, want) {
 			t.Errorf("prompt lacks %q", want)
 		}
 	}
-	srv2, _ := llm(t, func(int) string { return choice(`{"content":"{\"subject\":\"x\",\"body\":\" \"}"}`) })
+	srv2, _ := llm(t, func(int) string { return choice(`{"content":"{\"subject\":\"x\",\"body\":\"<think>only thoughts\"}"}`) })
 	a.URL = srv2.URL
-	if _, err := a.ReviseDraft(context.Background(), "", "x", "y", "z"); err == nil {
+	if _, err := a.ReviseDraft(context.Background(), tb.Draft{Body: "y"}, "", nil, "z"); err == nil {
 		t.Error("an empty revision must be an error, not a blank draft")
+	}
+}
+
+func TestReviseDraftNewMailFromGist(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	srv, reqs := llm(t, func(int) string {
+		return choice(`{"content":"{\"subject\":\"Friday\",\"to\":\"bob@x.no\",\"cc\":\"\",\"body\":\"Hi Bob,\\n\\fredag works\",\"note\":\"\"}"}`)
+	})
+	a := &Agent{URL: srv.URL, HTTP: srv.Client()}
+	r, err := a.ReviseDraft(context.Background(), tb.Draft{Kind: tb.NewMail}, "", nil, "tell bob@x.no friday works")
+	if err != nil || r.To != "bob@x.no" || r.Subject != "Friday" || r.Note != "revised" || r.Body != "Hi Bob,\n\nFredag works" {
+		t.Fatalf("%+v %v", r, err)
+	}
+	user := reqs()[0]["messages"].([]any)[1].(map[string]any)["content"].(string)
+	if !strings.Contains(user, "nothing written yet") || strings.Contains(user, "Earlier instructions") {
+		t.Errorf("prompt %q", user)
 	}
 }
