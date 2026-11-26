@@ -152,7 +152,7 @@ Press `?` in the app for the full list.
 | **Tabs** | `alt+1` all inboxes · `alt+2…9` accounts · `[` `]` previous/next |
 | **Move** | `j` `k` `g` `G` · `tab` or `1` `2` switch pane · `enter` read · `n` `p` next/previous unread · `l` folders · `v` sidebar |
 | **Scroll** | `pgup` `pgdown` always scroll the message · `space` pages · `ctrl+d` `ctrl+u` |
-| **Find** | `/` search · `u` unread only · `esc` back from search · `F5` refresh |
+| **Find** | `/` search · `u` unread only · `esc` back from search · `F5` refresh · `T` open the Thunderbird window |
 | **Mail** | `r` reply · `R` reply all · `f` forward · `c` compose · `a` archive · `d`/`Del` trash · `M` move · `m` read/unread · `S` star · `C` mark folder read |
 | **Select** | `space` select in the list · `m` `S` `a` `d` `M` act on all selected · `esc` clears |
 | **Links** | `o` link list · `o3` opens link [3] · `y` copy |
@@ -232,7 +232,11 @@ The daemon starts the bridge and `thunderbird --headless` if needed, and keeps r
 Thunderbird is unreachable; if Thunderbird goes away later, it starts it again. While it can't
 reach Thunderbird, an open UI does the work instead. The unit sets `KillMode=process`: the bridge
 and Thunderbird it started live in the service's cgroup, and stopping the service must not kill
-them. Failed summaries are retried up to 3 times, 15 minutes apart. It only processes mail that arrives after it first looks at a
+them.
+
+A headless Thunderbird holds your profile, so the normal Thunderbird launcher opens nothing
+while it runs. Press `T` in lazythunder, or run `lazythunder open-thunderbird`, to swap it for
+the windowed Thunderbird; lazythunder keeps working with the window. Failed summaries are retried up to 3 times, 15 minutes apart. It only processes mail that arrives after it first looks at a
 folder; older mail is summarized when you rest on it. Everything is stored in
 `~/.local/share/lazythunder/lazythunder.db`. The old summary cache
 (`~/.cache/lazythunder/summaries-v2.json`) is imported on first start and then removed; a

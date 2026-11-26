@@ -22,7 +22,7 @@ import (
 	"github.com/daveHylde/lazythunder/internal/ui"
 )
 
-const usage = "usage: lazythunder [daemon]"
+const usage = "usage: lazythunder [daemon | open-thunderbird]"
 
 func main() {
 	c := tb.New()
@@ -31,6 +31,10 @@ func main() {
 	case "":
 	case "daemon":
 		run = func() error { return daemon(c, agent.New(c)) }
+	case "open-thunderbird": // the headless instance holds the profile: swap it for a window
+		run = func() error {
+			return c.OpenWindow(context.Background(), func(s string) { fmt.Fprintln(os.Stderr, s) })
+		}
 	case "-h", "--help", "help":
 		fmt.Println(usage)
 		return

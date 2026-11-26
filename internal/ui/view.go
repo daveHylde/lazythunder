@@ -466,6 +466,7 @@ const helpText = `lazythunder — keys
                u                               toggle unread-only
                /                               search sender + subject (all time) and text (90 days), newest first
                F5                              refresh
+               T                               open the Thunderbird window (replaces the headless one)
 
  message       m  toggle read      S  toggle star (flag)
                a  archive          d, Del  delete (to trash)

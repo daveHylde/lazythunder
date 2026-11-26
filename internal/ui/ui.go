@@ -902,6 +902,13 @@ func (m Model) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, m.loadList(false)
 	case "f5":
 		return m, tea.Batch(m.loadFolders(), m.loadList(false))
+	case "T":
+		m.status = "opening Thunderbird…"
+		c, ctx := m.c, m.ctx
+		return m, func() tea.Msg {
+			err := c.OpenWindow(ctx, func(s string) { go prog.Send(statusMsg(s)) })
+			return doneMsg{text: "Thunderbird window open", err: err}
+		}
 	case "C":
 		return m.markAllRead()
 	case "n", "p":

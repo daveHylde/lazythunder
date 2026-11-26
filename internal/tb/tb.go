@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -572,7 +573,7 @@ func (c *Client) Ensure(ctx context.Context, progress func(string)) error {
 			return fmt.Errorf("start tb-bridge: %w", err)
 		}
 	}
-	if exec.Command("pgrep", "-x", "thunderbird").Run() != nil {
+	if exec.Command("pgrep", "-x", "thunderbird").Run() != nil && !handingOff() {
 		progress("starting thunderbird --headless")
 		if err := spawn("thunderbird", "--headless"); err != nil {
 			return fmt.Errorf("start thunderbird: %w", err)
@@ -619,4 +620,75 @@ func stateDir() string {
 	}
 	home, _ := os.UserHomeDir()
 	return filepath.Join(home, ".local", "state")
+}
+
+// handoffFile marks a switch from the headless Thunderbird to a windowed one,
+// so no lazythunder process starts a headless one in the gap between them.
+func handoffFile() string { return filepath.Join(stateDir(), "lazythunder", "handoff") }
+
+func handingOff() bool {
+	fi, err := os.Stat(handoffFile())
+	return err == nil && time.Since(fi.ModTime()) < 2*time.Minute
+}
+
+// headlessPIDs finds our user's Thunderbird main processes started with --headless.
+func headlessPIDs() []int {
+	var pids []int
+	entries, _ := os.ReadDir("/proc")
+	for _, e := range entries {
+		pid, err := strconv.Atoi(e.Name())
+		if err != nil {
+			continue
+		}
+		if fi, err := os.Stat("/proc/" + e.Name()); err != nil || fi.Sys().(*syscall.Stat_t).Uid != uint32(os.Getuid()) {
+			continue
+		}
+		b, err := os.ReadFile("/proc/" + e.Name() + "/cmdline")
+		if err != nil {
+			continue
+		}
+		args := strings.Split(strings.TrimRight(string(b), "\x00"), "\x00")
+		if filepath.Base(args[0]) == "thunderbird" && slices.Contains(args[1:], "--headless") {
+			pids = append(pids, pid)
+		}
+	}
+	return pids
+}
+
+// OpenWindow replaces a headless Thunderbird (which holds the profile, so the
+// normal launcher shows nothing) with a windowed one, then waits for the
+// add-on to reconnect. With no headless instance it just asks Thunderbird for a window.
+func (c *Client) OpenWindow(ctx context.Context, progress func(string)) error {
+	if err := os.MkdirAll(filepath.Dir(handoffFile()), 0o755); err != nil {
+		return err
+	}
+	if err := os.WriteFile(handoffFile(), nil, 0o644); err != nil {
+		return err
+	}
+	defer os.Remove(handoffFile())
+	pids := headlessPIDs()
+	if len(pids) > 0 {
+		progress("stopping the headless Thunderbird")
+	}
+	for _, pid := range pids {
+		syscall.Kill(pid, syscall.SIGTERM)
+	}
+	for deadline := time.Now().Add(20 * time.Second); len(pids) > 0; pids = headlessPIDs() {
+		if time.Now().After(deadline) {
+			for _, pid := range pids { // it holds the profile lock: the window can't open until it is gone
+				syscall.Kill(pid, syscall.SIGKILL)
+			}
+			deadline = time.Now().Add(5 * time.Second)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(200 * time.Millisecond):
+		}
+	}
+	progress("opening Thunderbird")
+	if err := spawn("thunderbird"); err != nil {
+		return fmt.Errorf("start thunderbird: %w", err)
+	}
+	return c.Ensure(ctx, progress) // waits for the add-on in the new window's instance
 }
