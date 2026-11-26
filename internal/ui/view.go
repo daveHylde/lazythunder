@@ -207,9 +207,9 @@ func (m Model) viewDetail(w, h int) string {
 		return panel(title, strings.Split(m.attVP.View(), "\n"), w, h, true)
 	}
 	if m.showAgent {
-		title := "[2] borealis2 (p: back to email)"
+		title := "[2] " + m.model() + " (p: back to email)"
 		if m.agentBusy {
-			title = "[2] borealis2 · " + m.agentState
+			title = "[2] " + m.model() + " · " + m.agentState
 		}
 		return panel(title, strings.Split(m.agentVP.View(), "\n"), w, h, focused)
 	}
@@ -420,11 +420,11 @@ const helpText = `lazythunder — keys
                r  reply   R  reply all   f  forward
                i  view the message's images full screen (sixel/kitty)
                o  safe links (type n to open [n], enter open, y copy)
-               U  unsubscribe without a browser (one-click, mail, or borealis2 on the page), then trash
+               U  unsubscribe without a browser (one-click, mail, or the agent on the page), then trash
                A  attachments (enter preview, d download, o open)
                list: ● unread  ★ flagged  ↩ you replied  → you forwarded
 
- borealis2     a  ask the agent (it can search, read, and act with your y/n)
+ agent         a  ask the agent (it can search, read, and act with your y/n)
                s  summarize selected message/thread
                w  AI reply from a short intent (follows ~/.config/lazythunder/reply-guide.md)
                p  back to the email

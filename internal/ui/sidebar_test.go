@@ -12,7 +12,7 @@ import (
 
 func TestSummarizerQueueOrder(t *testing.T) {
 	s := &summarizer{cache: map[string]agent.Summary{"done": {Summary: "x"}}, failed: map[string]string{},
-		queued: map[string]bool{}, seen: map[string]bool{}, wake: make(chan struct{}, 1)}
+		queued: map[string]bool{}, seen: map[string]bool{}, wake: make(chan struct{}, 1), ag: &agent.Agent{URL: "http://x"}}
 	s.enqueue(1, "a", false)
 	s.enqueue(2, "b", false)
 	s.enqueue(3, "c", true)    // jumps ahead
@@ -29,7 +29,7 @@ func TestSummarizerQueueOrder(t *testing.T) {
 }
 
 func TestSidebarFitsHeightAndWidth(t *testing.T) {
-	m := Model{sum: &summarizer{cache: map[string]agent.Summary{"h": {Summary: strings.Repeat("ord ", 40), Actions: []agent.Action{{Text: "Gjør noe viktig i dag", Link: 2}, {Text: "Svar Ola"}},
+	m := Model{ag: &agent.Agent{URL: "http://x"}, sum: &summarizer{cache: map[string]agent.Summary{"h": {Summary: strings.Repeat("ord ", 40), Actions: []agent.Action{{Text: "Gjør noe viktig i dag", Link: 2}, {Text: "Svar Ola"}},
 		Links: []agent.LinkInfo{{N: 1, Title: "Ordrestatus"}, {N: 3, Title: "Svindel", Suspicious: true}}}}}}
 	full := tb.FullMessage{}
 	full.HeaderMessageID = "h"
@@ -59,5 +59,18 @@ func TestSidebarFitsHeightAndWidth(t *testing.T) {
 		if !strings.Contains(plain, "⚠ faktura.pdf.exe") { // attachments survive trimming
 			t.Fatalf("risky attachment not flagged:\n%s", ansi.Strip(joined))
 		}
+	}
+}
+
+func TestSidebarWithAIOff(t *testing.T) {
+	m := Model{ag: &agent.Agent{URL: "off"}, sum: &summarizer{cache: map[string]agent.Summary{}}}
+	full := tb.FullMessage{}
+	full.HeaderMessageID = "h"
+	m.full = &full
+	m.links = []link{{url: "https://shop.no/o/1", label: "Se ordren"}}
+	lines, _ := m.sidebarLines(32, 20)
+	plain := ansi.Strip(strings.Join(lines, "\n"))
+	if strings.Contains(plain, "Summary") || !strings.Contains(plain, "[1] Se ordren") {
+		t.Fatalf("AI off sidebar:\n%s", plain)
 	}
 }

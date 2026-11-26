@@ -87,7 +87,7 @@ func (s *summarizer) get(hdr string) (agent.Summary, sumState, string) {
 
 // enqueue adds a message unless it is done or pending; front moves it ahead.
 func (s *summarizer) enqueue(id int, hdr string, front bool) {
-	if hdr == "" {
+	if hdr == "" || !s.ag.Enabled() {
 		return
 	}
 	s.mu.Lock()

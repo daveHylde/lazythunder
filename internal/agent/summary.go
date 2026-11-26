@@ -1,11 +1,9 @@
 package agent
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"net/http"
 	"strings"
 )
 
@@ -30,7 +28,7 @@ type LinkInfo struct {
 	Suspicious bool   `json:"suspicious"`
 }
 
-const summaryPrompt = `Summarize the email for a busy reader in at most 12 words, in the email's language (Norwegian or English).
+const summaryPrompt = `Summarize the email for a busy reader in at most 12 words, in the email's language.
 Then list up to 3 concrete action items for the recipient, each under 10 words; an empty list if nothing needs doing.
 Newsletters, receipts and notifications usually need no action.
 Links in the email are marked [n] and listed under "Links". If an action is done by opening one of them, set its "link" to that n, else 0.
@@ -84,32 +82,16 @@ func (a *Agent) Summarize(ctx context.Context, from, subject, body string, links
 // structured runs one stateless completion whose reply must match schema,
 // and decodes it into out.
 func (a *Agent) structured(ctx context.Context, name, system, user string, schema map[string]any, maxTokens int, out any) error {
-	req, _ := json.Marshal(map[string]any{
-		"model":           a.Model,
+	m, err := a.post(ctx, map[string]any{
 		"messages":        []Msg{{Role: "system", Content: system}, {Role: "user", Content: user}},
 		"temperature":     0.2,
 		"max_tokens":      maxTokens,
 		"response_format": map[string]any{"type": "json_schema", "json_schema": map[string]any{"name": name, "schema": schema}},
 	})
-	hr, err := http.NewRequestWithContext(ctx, "POST", a.URL+"/chat/completions", bytes.NewReader(req))
 	if err != nil {
 		return err
 	}
-	hr.Header.Set("Content-Type", "application/json")
-	resp, err := a.HTTP.Do(hr)
-	if err != nil {
-		return fmt.Errorf("llama.cpp at %s: %w", a.URL, err)
-	}
-	defer resp.Body.Close()
-	var r struct {
-		Choices []struct {
-			Message Msg `json:"message"`
-		} `json:"choices"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil || len(r.Choices) == 0 {
-		return fmt.Errorf("llama.cpp: bad response (%s)", resp.Status)
-	}
-	if err := json.Unmarshal([]byte(r.Choices[0].Message.Content), out); err != nil {
+	if err := json.Unmarshal([]byte(m.Content), out); err != nil {
 		return fmt.Errorf("%s is not JSON: %w", name, err)
 	}
 	return nil

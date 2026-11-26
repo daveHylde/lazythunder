@@ -5,7 +5,7 @@ import (
 	"fmt"
 )
 
-// WebStep is borealis2's next move on an unsubscribe web page.
+// WebStep is the model's next move on an unsubscribe web page.
 type WebStep struct {
 	Result  string  `json:"result"` // unsubscribed, submit, follow, needs_browser, failed
 	Form    int     `json:"form"`   // submit: form number

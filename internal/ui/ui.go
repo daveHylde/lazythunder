@@ -551,7 +551,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			m.say("error: " + msg.err.Error())
 		} else {
-			m.say("borealis2: " + msg.text)
+			m.say(m.model() + ": " + msg.text)
 		}
 		return m, nil
 	case confirmMsg:
@@ -562,7 +562,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		d := msg.d
 		if m.draft != nil {
 			m.pending = &d
-			m.status = "borealis2 has a draft ready; it opens when you finish this one"
+			m.status = m.model() + " has a draft ready; it opens when you finish this one"
 			return m, nil
 		}
 		return m.openDraft(d), nil
@@ -809,13 +809,13 @@ func (m Model) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.startInput("search", "search all accounts", "")
 	case "a":
 		m.showAgent, m.focus = true, pDetail
-		return m.startInput("agent", "ask borealis2", "")
+		return m.startInput("agent", "ask "+m.model(), "")
 	case "p":
 		m.showAgent = false
 		return m, nil
 	case "ctrl+l":
 		if m.agentBusy {
-			m.status = "borealis2 is busy (esc to cancel)"
+			m.status = m.model() + " is busy (esc to cancel)"
 			return m, nil
 		}
 		m.ag.Reset()
@@ -984,8 +984,12 @@ func (m Model) keyMessageActions(s string, passthrough tea.Cmd) (tea.Model, tea.
 }
 
 func (m Model) startInput(purpose, placeholder, value string) (tea.Model, tea.Cmd) {
+	if (purpose == "agent" || purpose == "reply") && !m.ag.Enabled() {
+		m.status = "AI is off (LAZYTHUNDER_LLM_URL=off)"
+		return m, nil
+	}
 	if (purpose == "agent" || purpose == "reply") && m.agentBusy {
-		m.status = "borealis2 is busy (esc to cancel)"
+		m.status = m.model() + " is busy (esc to cancel)"
 		return m, nil
 	}
 	m.mode, m.inputFor = mInput, purpose
@@ -1028,8 +1032,12 @@ func (m Model) keyInput(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) askAgent(q string) (tea.Model, tea.Cmd) {
+	if !m.ag.Enabled() {
+		m.status = "AI is off (LAZYTHUNDER_LLM_URL=off)"
+		return m, nil
+	}
 	if m.agentBusy {
-		m.status = "borealis2 is busy (esc to cancel)"
+		m.status = m.model() + " is busy (esc to cancel)"
 		return m, nil
 	}
 	m.showAgent, m.agentBusy = true, true
@@ -1243,3 +1251,5 @@ func (m Model) defaultIdentity() string {
 	}
 	return ""
 }
+
+func (m Model) model() string { return m.ag.Name() }

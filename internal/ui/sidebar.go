@@ -127,21 +127,26 @@ func (m Model) sidebarLines(w, h int) ([]string, *sixelReq) {
 
 	// summary + action items
 	var top []string
-	top = append(top, section("✦ Summary"))
 	sum, state, errText := m.sum.get(x.HeaderMessageID)
-	switch state {
-	case sumDone:
+	if m.ag.Enabled() {
+		top = append(top, section("✦ Summary"))
+	}
+	switch {
+	case !m.ag.Enabled():
+	case state == sumDone:
 		top = append(top, wrapDim(sum.Summary, "")...)
-	case sumRunning:
+	case state == sumRunning:
 		top = append(top, dim.Render("summarizing…"))
-	case sumQueued:
+	case state == sumQueued:
 		top = append(top, dim.Render("queued for a summary"))
-	case sumFailed:
+	case state == sumFailed:
 		top = append(top, errSt.Render(ansi.Truncate("AI unavailable: "+oneLine(errText), w, "…")))
 	default:
 		top = append(top, dim.Render("rest on the message for a summary"))
 	}
-	top = append(top, "")
+	if len(top) > 0 {
+		top = append(top, "")
+	}
 
 	// To do: action items (with the link that does them), then the other safe links
 	info := linkInfos(sum)
@@ -298,7 +303,7 @@ func linkInfos(sum agent.Summary) map[int]agent.LinkInfo {
 	return info
 }
 
-// linkTitle is borealis2's title for link n, else its text, else its host.
+// linkTitle is the model's title for link n, else its text, else its host.
 func (m Model) linkTitle(n int, info map[int]agent.LinkInfo) string {
 	if t := oneLine(info[n].Title); t != "" {
 		return t

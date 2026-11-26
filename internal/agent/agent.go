@@ -38,8 +38,10 @@ type Hooks struct {
 	Status  func(string)             // progress line, e.g. "searching…"
 }
 
+// Agent talks to any OpenAI-compatible chat completions endpoint.
 type Agent struct {
-	URL, Model string
+	URL, Model string // Model "" lets the server pick (llama.cpp serves its loaded model)
+	APIKey     string // sent as a Bearer token when set
 	TB         *tb.Client
 	History    []Msg
 	HTTP       *http.Client
@@ -47,15 +49,65 @@ type Agent struct {
 }
 
 func New(c *tb.Client) *Agent {
-	url := os.Getenv("LAZYTHUNDER_LLM_URL")
+	url := strings.TrimRight(os.Getenv("LAZYTHUNDER_LLM_URL"), "/")
 	if url == "" {
 		url = "http://127.0.0.1:8085/v1"
 	}
-	model := os.Getenv("LAZYTHUNDER_MODEL")
-	if model == "" {
-		model = "borealis2"
+	return &Agent{URL: url, Model: os.Getenv("LAZYTHUNDER_MODEL"), APIKey: os.Getenv("LAZYTHUNDER_API_KEY"),
+		TB: c, HTTP: &http.Client{Timeout: 5 * time.Minute}}
+}
+
+// Enabled is false when AI is switched off (LAZYTHUNDER_LLM_URL=off).
+func (a *Agent) Enabled() bool { return a != nil && a.URL != "off" }
+
+// Name is the assistant's display name.
+func (a *Agent) Name() string {
+	if a != nil && a.Model != "" {
+		return a.Model
 	}
-	return &Agent{URL: url, Model: model, TB: c, HTTP: &http.Client{Timeout: 5 * time.Minute}}
+	return "assistant"
+}
+
+// post sends one chat completion request and returns the reply message.
+func (a *Agent) post(ctx context.Context, req map[string]any) (Msg, error) {
+	if !a.Enabled() {
+		return Msg{}, fmt.Errorf("AI is off (LAZYTHUNDER_LLM_URL=off)")
+	}
+	if a.Model != "" {
+		req["model"] = a.Model
+	}
+	body, _ := json.Marshal(req)
+	hr, err := http.NewRequestWithContext(ctx, "POST", a.URL+"/chat/completions", bytes.NewReader(body))
+	if err != nil {
+		return Msg{}, err
+	}
+	hr.Header.Set("Content-Type", "application/json")
+	if a.APIKey != "" {
+		hr.Header.Set("Authorization", "Bearer "+a.APIKey)
+	}
+	resp, err := a.HTTP.Do(hr)
+	if err != nil {
+		return Msg{}, fmt.Errorf("AI at %s: %w", a.URL, err)
+	}
+	defer resp.Body.Close()
+	var out struct {
+		Choices []struct {
+			Message Msg `json:"message"`
+		} `json:"choices"`
+		Error *struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return Msg{}, fmt.Errorf("AI: %s: %w", resp.Status, err)
+	}
+	if out.Error != nil {
+		return Msg{}, fmt.Errorf("AI: %s", out.Error.Message)
+	}
+	if len(out.Choices) == 0 {
+		return Msg{}, fmt.Errorf("AI: empty response (%s)", resp.Status)
+	}
+	return out.Choices[0].Message, nil
 }
 
 func (a *Agent) Reset() { a.History = nil }
@@ -138,42 +190,9 @@ func (a *Agent) trim() {
 }
 
 func (a *Agent) complete(ctx context.Context) (Msg, error) {
-	body, _ := json.Marshal(map[string]any{
-		"model":       a.Model,
-		"messages":    a.History,
-		"tools":       tools,
-		"temperature": 0.4,
-	})
-	req, err := http.NewRequestWithContext(ctx, "POST", a.URL+"/chat/completions", bytes.NewReader(body))
-	if err != nil {
-		return Msg{}, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := a.HTTP.Do(req)
-	if err != nil {
-		return Msg{}, fmt.Errorf("llama.cpp at %s: %w", a.URL, err)
-	}
-	defer resp.Body.Close()
-	var out struct {
-		Choices []struct {
-			Message Msg `json:"message"`
-		} `json:"choices"`
-		Error *struct {
-			Message string `json:"message"`
-		} `json:"error"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return Msg{}, fmt.Errorf("llama.cpp: %s: %w", resp.Status, err)
-	}
-	if out.Error != nil {
-		return Msg{}, fmt.Errorf("llama.cpp: %s", out.Error.Message)
-	}
-	if len(out.Choices) == 0 {
-		return Msg{}, fmt.Errorf("llama.cpp: empty response (%s)", resp.Status)
-	}
-	m := out.Choices[0].Message
+	m, err := a.post(ctx, map[string]any{"messages": a.History, "tools": tools, "temperature": 0.4})
 	m.Role = "assistant"
-	return m, nil
+	return m, err
 }
 
 func clip(s string, n int) string {

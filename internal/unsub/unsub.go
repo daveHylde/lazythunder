@@ -184,7 +184,7 @@ func web(ctx context.Context, d Deps, start string) error {
 		if step == maxSteps {
 			return errors.New("gave up after several pages")
 		}
-		d.Progress("unsubscribing: borealis2 is reading " + host(p.url) + "…")
+		d.Progress("unsubscribing: the agent is reading " + host(p.url) + "…")
 		s, serr := d.Step(ctx, d.Me, p.describe())
 		if serr != nil {
 			return serr
@@ -210,7 +210,7 @@ func web(ctx context.Context, d Deps, start string) error {
 			}
 			p, err = fetch(ctx, d.HTTP, f.method, f.action, vals)
 		default:
-			return errors.New("borealis2: " + s.Explain)
+			return errors.New("agent: " + s.Explain)
 		}
 	}
 }

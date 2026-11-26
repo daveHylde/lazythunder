@@ -8,31 +8,23 @@ import (
 
 // defaultReplyGuide is written to ~/.config/lazythunder/reply-guide.md on
 // first use; the user edits that file to change how replies are written.
-const defaultReplyGuide = `# How borealis2 writes replies
+const defaultReplyGuide = `# How the assistant writes replies
 # (lines starting with # are ignored; edit freely)
 
-Language: reply in Norwegian (bokmål) if the email is Norwegian, otherwise in English.
+Language: reply in the language of the email.
 Tone: polite, friendly and to the point. No fluff, no filler, no repeating the question back.
 Length: as short as the content allows; usually 2-5 sentences. One short paragraph per point.
 Do not invent facts, dates, prices or promises the user did not give; if something is missing,
 leave a clear [placeholder].
 Never add a subject line, quoted text or signature blocks beyond the template below.
 
-Template (Norwegian):
-Hei <first name>,
-
-<reply>
-
-Mvh
-David
-
-Template (English):
+Template (greeting and sign-off in the reply's language):
 Hi <first name>,
 
 <reply>
 
 Best regards,
-David
+<my first name, from the identity the reply is sent from>
 `
 
 // ReplyGuide returns the user's reply guide, creating the default file if missing.

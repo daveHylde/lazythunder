@@ -19,7 +19,7 @@ var (
 	reLabelHost = regexp.MustCompile(`(?i)^(?:https?://)?((?:[a-z0-9-]+\.)+[a-z]{2,})(?:[/:?#]\S*)?$`)
 )
 
-// safeLink is the deterministic part of the link filter (borealis2 may veto
+// safeLink is the deterministic part of the link filter (the model may veto
 // more): https only, a plain public host name, no shorteners, no executable
 // or archive downloads, no label that names a different site than the target,
 // and no unsubscribe links (U handles those).
