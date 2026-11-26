@@ -52,6 +52,9 @@ var prog *tea.Program
 // tbReady lets our background worker start once Thunderbird answers.
 var tbReady atomic.Bool
 
+// latestList is the newest listSeq, readable from search goroutines.
+var latestList atomic.Int64
+
 type Model struct {
 	c   *tb.Client
 	ag  *agent.Agent
@@ -72,12 +75,11 @@ type Model struct {
 	prevView  listView // restored when leaving search results
 	unread    bool     // unread-only filter
 
-	msgs       []tb.Message
-	mcur       int
-	hasMore    bool
-	before     time.Time // date cursor for the next page
-	listSeq    int
-	searchLeft int // search halves still running
+	msgs    []tb.Message
+	mcur    int
+	hasMore bool
+	before  time.Time // date cursor for the next page
+	listSeq int
 
 	preview       viewport.Model
 	full          *tb.FullMessage
@@ -160,6 +162,8 @@ type (
 		more   bool
 		append bool
 		err    error
+		// partial: a search batch with more to come
+		partial bool
 	}
 	previewTick struct{ seq, id int }
 	readTick    struct{ seq, id int } // the cursor rested on a message for 1s
@@ -282,22 +286,22 @@ func (m Model) loadFolders() tea.Cmd {
 
 func (m *Model) loadList(appendPage bool) tea.Cmd {
 	m.listSeq++
+	latestList.Store(int64(m.listSeq))
 	seq, unread, ctx, c := m.listSeq, m.unread, m.ctx, m.c
 	if m.view.folderIDs == nil {
 		q := m.view.query
-		m.msgs, m.mcur, m.searchLeft = nil, 0, 2
-		// Sender and subject hits (fast, all time) come first; body hits from the
-		// slower full-text index are merged in when they arrive.
-		headers := func() tea.Msg {
-			ms, err := c.SearchHeaders(ctx, q, unread)
-			return listMsg{seq: seq, msgs: ms, err: err}
+		m.msgs, m.mcur = nil, 0
+		if m.viewCtx != nil {
+			ctx = m.viewCtx // show cancels it: a search left behind stops asking Thunderbird
 		}
-		content := func() tea.Msg {
-			// shortcut: one page of full-text hits in the last 90 days; tb search has no offset paging
-			p, err := c.Search(ctx, q, tb.SearchOpts{Unread: unread, Limit: pageSize})
-			return listMsg{seq: seq, msgs: p.Messages, err: err}
+		return func() tea.Msg {
+			// shortcut: 200 hits; each costs Thunderbird a folder scan to resolve, page further if people miss older ones
+			_, err := c.FullText(ctx, q, tb.SearchOpts{Unread: unread, Limit: 200}, func(ms []tb.Message) bool {
+				prog.Send(listMsg{seq: seq, msgs: ms, partial: true})
+				return latestList.Load() == int64(seq) // stop once another list replaced it
+			})
+			return listMsg{seq: seq, err: err}
 		}
-		return tea.Batch(headers, content)
 	}
 	ids, before := m.view.folderIDs, time.Time{}
 	if appendPage {
@@ -381,7 +385,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if m.view.title == "" { // first load
 			mm, cmd := m.openTab(0)
-			return mm, tea.Batch(cmd, mm.(Model).pollNewMail())
+			return mm, tea.Batch(cmd, mm.(Model).pollNewMail(false), m.subscribe())
 		}
 		m.tab = min(m.tab, len(m.acctOrder))
 		return m, nil
@@ -399,8 +403,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.seq != m.listSeq {
 			return m, nil
 		}
-		if m.view.folderIDs == nil { // search: the two halves arrive in either order
-			if m.searchLeft == 2 {
+		if m.view.folderIDs == nil {
+			if !msg.partial {
 				m.err = ""
 			}
 			if msg.err != nil {
@@ -529,8 +533,25 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case pollTick:
-		return m, m.pollNewMail()
+		return m, m.pollNewMail(false)
+	case eventsMsg:
+		return m, waitEvent(msg.ch)
+	case mailEventMsg:
+		switch msg.name {
+		case "newMail":
+			return m, tea.Batch(waitEvent(msg.ch), m.pollNewMail(true))
+		case "changed": // flags, moves, counts
+			return m, tea.Batch(waitEvent(msg.ch), m.loadFolders())
+		}
+		return m, waitEvent(msg.ch)
 	case newMailMsg:
+		if msg.event {
+			if msg.n > 0 {
+				m.status = fmt.Sprintf("%d new message(s) · F5 to refresh", msg.n)
+				return m, m.loadFolders()
+			}
+			return m, nil
+		}
 		if msg.n > 0 {
 			m.status = fmt.Sprintf("%d new message(s) · F5 to refresh", msg.n)
 			return m, tea.Batch(m.loadFolders(), nextPoll())
@@ -784,12 +805,11 @@ func (m Model) searchResults(msg listMsg) (tea.Model, tea.Cmd) {
 			m.mcur = i
 		}
 	}
-	m.searchLeft--
 	m.loadMeta()
 	m.applyStoredReplies()
 	m.status = fmt.Sprintf("%d messages", len(m.msgs))
-	if m.searchLeft > 0 {
-		m.status += " · searching message text…"
+	if msg.partial {
+		m.status += " · searching…"
 	}
 	cmds := []tea.Cmd{m.loadReplyStatus(msg.msgs)}
 	if cur == 0 || len(m.msgs) > 0 && m.msgs[m.mcur].ID != cur {
@@ -1215,7 +1235,7 @@ func (m Model) keyInput(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.prevView = m.view
 			}
 			m.focus = pMessages
-			return m.show(listView{title: fmt.Sprintf("Search: %s · sender/subject: all · text: last %s (esc back)", v, tb.SearchWindow), query: v})
+			return m.show(listView{title: fmt.Sprintf("Search: %s · all mail (esc back)", v), query: v})
 		}
 		if m.inputFor == "reply" {
 			return m.askAgent(fmt.Sprintf("Write a reply to message id %d. What I want to say, in short: %s\n"+

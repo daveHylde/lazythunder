@@ -39,8 +39,8 @@ gives you a fast, keyboard-only way to get through it all.
 
 - **One inbox for everything.** `alt+1` merges every account's inbox, newest first. `alt+2…9`
   jump straight to an account, and each tab shows its unread count.
-- **Fast search.** `/` searches sender and subject across every account and all time in a few
-  seconds, ignoring case, then merges in matches from the message text. Newest first.
+- **Fast search.** `/` searches sender, recipients, subject, attachment names and message text
+  across every account and all time, ignoring case. The first hits show within a second. Newest first.
 - **Real HTML in your terminal.** Bold, italics, headings, lists and quotes. Layout tables keep their
   columns side by side, small icons sit inline with the text, hidden preview text is dropped, and remote and embedded images show up inline: sharp
   with sixel or kitty graphics, and as half-blocks in any other terminal. `i` opens them full
@@ -77,31 +77,26 @@ gives you a fast, keyboard-only way to get through it all.
 
 ## Quick start
 
-lazythunder talks to Thunderbird through
-[thunderbird-cli](https://github.com/vitalio-sh/thunderbird-cli): a small Thunderbird add-on, a
-local bridge, and the `tb` command.
+lazythunder talks to Thunderbird through its own small add-on, which Thunderbird connects to
+lazythunder over native messaging. Thunderbird 128 or newer is required.
 
-1. **Install the Thunderbird add-on.** Download the latest `.xpi` from
-   [thunderbird-cli releases](https://github.com/vitalio-sh/thunderbird-cli/releases/latest). In
-   Thunderbird, open **Add-ons and Themes**, then ⚙ → **Install Add-on From File…**. Thunderbird
-   128 or newer is required.
-2. **Install the bridge and CLI:**
-   ```sh
-   npm install -g thunderbird-cli thunderbird-cli-bridge
-   ```
-3. **Install lazythunder** (Go 1.26+):
+1. **Install lazythunder** (Go 1.26+):
    ```sh
    go install github.com/daveHylde/lazythunder@latest
    ```
-4. **Run it:**
+2. **Install the add-on.** Close Thunderbird, then run:
+   ```sh
+   lazythunder install
+   ```
+   It installs the add-on into your default profile, registers lazythunder as its
+   native-messaging host, removes thunderbird-cli if it was installed, and starts Thunderbird
+   headless.
+3. **Run it:**
    ```sh
    lazythunder
    ```
-   On start, lazythunder starts the bridge and `thunderbird --headless` if they aren't running,
-   and waits for the add-on to connect. It still works if Thunderbird is already open.
-5. **Optional: let `S` send mail.** In the add-on's options in Thunderbird, tick **Allow agents
-   to send email directly**. Without it, drafts are saved to Drafts and sending fails with
-   `SEND_DISABLED`.
+   On start, lazythunder starts `thunderbird --headless` if it isn't running, and waits for the
+   add-on to connect. It still works if Thunderbird is already open.
 
 ### Optional extras
 
@@ -172,7 +167,6 @@ Everything is set with environment variables.
 | `LAZYTHUNDER_LLM_URL` | `http://127.0.0.1:8085/v1` | OpenAI-compatible base URL. `off` disables AI. |
 | `LAZYTHUNDER_MODEL` | (the server's default) | model name. Hosted providers need it. |
 | `LAZYTHUNDER_API_KEY` | (none) | sent as `Authorization: Bearer …` |
-| `LAZYTHUNDER_BRIDGE_PORT` | `7710` | tb-bridge HTTP port. The add-on always connects on WebSocket port 7701. |
 | `LAZYTHUNDER_GRAPHICS` | auto | `kitty` or `sixel` to force an image protocol |
 | `VISUAL` / `EDITOR` | `vi` | editor for drafts |
 
@@ -182,13 +176,17 @@ Everything is set with environment variables.
 | `~/.local/share/lazythunder/lazythunder.db` | summaries, category tags, reply status and unsubscribe methods (SQLite, shared with the daemon) |
 | `~/.config/lazythunder/env` | environment for the background daemon (see below) |
 | `~/.cache/lazythunder/` | image cache |
-| `~/.local/state/lazythunder/` | bridge and Thunderbird logs when lazythunder started them |
+| `~/.local/state/lazythunder/` | hub log, and Thunderbird's when lazythunder started it |
 
 ## How it works
 
-- **Search** runs sender and subject matches as native Thunderbird queries, which take seconds
-  even over all time. The full-text index is slower, so text matches cover the last 90 days and
-  are merged in when they arrive.
+- **Talking to Thunderbird.** lazythunder's add-on (`addon/`) asks Thunderbird to start
+  `lazythunder hub` over native messaging; the hub shares that pipe with the UI and the daemon
+  over a unix socket (see `addon/PROTOCOL.md`). A call takes a few milliseconds, and the add-on
+  pushes new mail and changes, so nothing waits for the next poll.
+- **Search** reads Thunderbird's own search index (gloda, `global-messages-db.sqlite`)
+  read-only, which matches everything in about 0.2 s, then looks the hits up in Thunderbird 20 at
+  a time. Mail that arrived in the last minute or so may not be indexed yet.
 - **Folder lists** page by date windows instead of sorting whole folders, so a 26,000-message
   folder opens as fast as a small one.
 - **Summaries** run in a background queue, one at a time and paused while you chat with the
@@ -204,8 +202,8 @@ Everything is set with environment variables.
 
 ## Background daemon
 
-`lazythunder daemon` does the background work without the UI: every minute it looks for new
-mail in every inbox, writes its summary, category and priority, finds its unsubscribe options,
+`lazythunder daemon` does the background work without the UI: as new mail arrives (and every
+minute as a fallback) it looks for new mail in every inbox, writes its summary, category and priority, finds its unsubscribe options,
 and checks your Sent folders to record what you replied to or forwarded. When you open
 lazythunder, it's all there already. While a daemon runs, the UI leaves this work to it; without
 one, the UI does it while open.
@@ -228,10 +226,10 @@ systemctl --user enable --now lazythunder
 journalctl --user -u lazythunder -f   # its log
 ```
 
-The daemon starts the bridge and `thunderbird --headless` if needed, and keeps retrying while
+The daemon starts `thunderbird --headless` if needed, and keeps retrying while
 Thunderbird is unreachable; if Thunderbird goes away later, it starts it again. While it can't
-reach Thunderbird, an open UI does the work instead. The unit sets `KillMode=process`: the bridge
-and Thunderbird it started live in the service's cgroup, and stopping the service must not kill
+reach Thunderbird, an open UI does the work instead. The unit sets `KillMode=process`: the
+Thunderbird it started lives in the service's cgroup, and stopping the service must not kill
 them.
 
 A headless Thunderbird holds your profile, so the normal Thunderbird launcher opens nothing

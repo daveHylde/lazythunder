@@ -10,6 +10,7 @@ import (
 	"github.com/daveHylde/lazythunder/internal/agent"
 	"github.com/daveHylde/lazythunder/internal/bg"
 	"github.com/daveHylde/lazythunder/internal/store"
+	"github.com/daveHylde/lazythunder/internal/tb"
 )
 
 type sumState int
@@ -23,8 +24,16 @@ const (
 )
 
 type (
-	pollTick      struct{}
-	newMailMsg    struct{ n int }
+	pollTick   struct{}
+	newMailMsg struct {
+		n     int
+		event bool // from a newMail event: the minute poll chain is not involved
+	}
+	eventsMsg    struct{ ch <-chan tb.Event } // subscribed to add-on events
+	mailEventMsg struct {
+		name string
+		ch   <-chan tb.Event
+	}
 	noteQueuedMsg struct{} // the open message's note state may have changed
 	dataTick      struct{} // time to check the store for changes by the workers
 )
@@ -137,7 +146,7 @@ func daemonDown(st *store.Store) bool {
 }
 
 // pollNewMail runs a poller pass; fresh inbox mail is queued for notes.
-func (m Model) pollNewMail() tea.Cmd {
+func (m Model) pollNewMail(event bool) tea.Cmd {
 	if m.st == nil {
 		return nil
 	}
@@ -145,7 +154,29 @@ func (m Model) pollNewMail() tea.Cmd {
 	folders, ctx := m.folders, m.ctx
 	return func() tea.Msg {
 		n, _ := p.Pass(ctx, folders) // shortcut: failed folders are retried next minute, unreported
-		return newMailMsg{n}
+		return newMailMsg{n, event}
+	}
+}
+
+// subscribe starts listening for add-on events; without them the minute poll still runs.
+func (m Model) subscribe() tea.Cmd {
+	c, ctx := m.c, m.ctx
+	return func() tea.Msg {
+		ch, _ := c.Events(ctx)
+		return eventsMsg{ch}
+	}
+}
+
+func waitEvent(ch <-chan tb.Event) tea.Cmd {
+	if ch == nil {
+		return nil
+	}
+	return func() tea.Msg {
+		e, ok := <-ch
+		if !ok {
+			return nil
+		}
+		return mailEventMsg{e.Name, ch}
 	}
 }
 

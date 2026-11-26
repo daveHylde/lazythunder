@@ -3,46 +3,34 @@ package tb
 import (
 	"context"
 	"encoding/json"
-	"fmt"
-	"os"
 	"testing"
 	"time"
 )
 
-// The test binary doubles as a fake `tb` when LT_FAKE_TB is set: a folder with
-// a sparse recent tail and a 2000-message burst ~40 days ago.
-func TestMain(m *testing.M) {
-	if os.Getenv("LT_FAKE_TB") == "" {
-		os.Exit(m.Run())
-	}
-	var since, until time.Time
-	folder := fakeFolder
-	args := os.Args[1:]
-	for i := 0; i+1 < len(args); i++ {
-		switch args[i] {
-		case "--since":
-			since, _ = time.Parse(time.RFC3339, args[i+1])
-		case "--until":
-			until, _ = time.Parse(time.RFC3339, args[i+1])
-		case "--folder":
-			if args[i+1] == "g" {
-				folder = sparseFolder
+// fakeSearch serves the search op over a folder with a sparse recent tail
+// and a 2000-message burst ~40 days ago (folder "g": sparseFolder).
+func fakeSearch(t *testing.T) *Client {
+	return fakeHub(t, func(op string, params json.RawMessage) (any, *Error) {
+		var p struct{ Folder, Since, Until string }
+		json.Unmarshal(params, &p)
+		since, _ := time.Parse(time.RFC3339, p.Since)
+		until, _ := time.Parse(time.RFC3339, p.Until)
+		folder := fakeFolder
+		if p.Folder == "g" {
+			folder = sparseFolder
+		}
+		var hits []Message
+		for _, msg := range folder() {
+			if !msg.Date.Before(since) && !msg.Date.After(until) {
+				hits = append(hits, msg) // oldest first
 			}
 		}
-	}
-	var hits []Message
-	for _, msg := range folder() {
-		if !msg.Date.Before(since) && !msg.Date.After(until) {
-			hits = append(hits, msg) // oldest first, like tb search
+		more := len(hits) > 1000
+		if more {
+			hits = hits[:1000]
 		}
-	}
-	more := len(hits) > 1000
-	if more {
-		hits = hits[:1000]
-	}
-	data, _ := json.Marshal(map[string]any{"messages": hits, "hasMore": more})
-	fmt.Printf(`{"ok":true,"data":%s}`, data)
-	os.Exit(0)
+		return Page{Messages: hits, HasMore: more}, nil
+	})
 }
 
 var fakeNow = time.Date(2026, 11, 24, 12, 0, 0, 0, time.UTC)
@@ -69,8 +57,7 @@ func sparseFolder() (ms []Message) {
 }
 
 func TestRecentMergedIsOrderedAndComplete(t *testing.T) {
-	t.Setenv("LT_FAKE_TB", "1")
-	c := &Client{Bin: os.Args[0], Port: "0"}
+	c := fakeSearch(t)
 	seen := map[int]bool{}
 	var order []Message
 	before := fakeNow.Add(time.Hour)
@@ -104,8 +91,7 @@ func TestRecentMergedIsOrderedAndComplete(t *testing.T) {
 }
 
 func TestRecentPagesThroughBurstWithoutLoss(t *testing.T) {
-	t.Setenv("LT_FAKE_TB", "1")
-	c := &Client{Bin: os.Args[0], Port: "0"}
+	c := fakeSearch(t)
 	seen := map[int]bool{}
 	before := fakeNow.Add(time.Hour)
 	for page := 0; ; page++ {

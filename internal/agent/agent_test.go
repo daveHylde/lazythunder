@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -33,7 +34,7 @@ func TestAskDeclinedActionAndDraft(t *testing.T) {
 			{"id":"1","type":"function","function":{"name":"delete","arguments":"{\"ids\":[5]}"}},
 			{"id":"2","type":"function","function":{"name":"propose_draft","arguments":"{\"kind\":\"reply\",\"message_id\":5,\"body\":\"Takk!\"}"}}]}`,
 		`{"content":"Done."}`)
-	a := &Agent{URL: srv.URL, Model: "m", TB: &tb.Client{Bin: "false"}, HTTP: srv.Client(), accounts: "- test\n"}
+	a := &Agent{URL: srv.URL, Model: "m", TB: &tb.Client{Socket: filepath.Join(t.TempDir(), "none.sock")}, HTTP: srv.Client(), accounts: "- test\n"}
 
 	var asked string
 	var proposed tb.Draft

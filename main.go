@@ -1,5 +1,6 @@
-// lazythunder: a lazygit-style terminal UI for Thunderbird, built on
-// thunderbird-cli (`tb`) with a local llama.cpp mail assistant.
+// lazythunder: a lazygit-style terminal UI for Thunderbird, talking to its
+// own Thunderbird add-on through a native-messaging hub, with a local
+// llama.cpp mail assistant.
 package main
 
 import (
@@ -17,20 +18,37 @@ import (
 
 	"github.com/daveHylde/lazythunder/internal/agent"
 	"github.com/daveHylde/lazythunder/internal/bg"
+	"github.com/daveHylde/lazythunder/internal/hub"
+	"github.com/daveHylde/lazythunder/internal/install"
 	"github.com/daveHylde/lazythunder/internal/store"
 	"github.com/daveHylde/lazythunder/internal/tb"
 	"github.com/daveHylde/lazythunder/internal/ui"
 )
 
-const usage = "usage: lazythunder [daemon | open-thunderbird]"
+const usage = "usage: lazythunder [daemon | open-thunderbird | install | hub]"
 
 func main() {
+	// Thunderbird runs a native-messaging host as `<path> <manifest-path> <extension-id>`.
+	if len(os.Args) == 3 && os.Args[2] == hub.AddonID {
+		if hub.Main(true) != nil {
+			os.Exit(1)
+		}
+		return
+	}
 	c := tb.New()
 	run := func() error { return ui.Run(c, agent.New(c)) }
 	switch arg := strings.Join(os.Args[1:], " "); arg {
 	case "":
 	case "daemon":
 		run = func() error { return daemon(c, agent.New(c)) }
+	case "hub":
+		run = func() error { return hub.Main(false) }
+	case "install":
+		run = func() error {
+			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+			defer stop()
+			return install.Run(ctx, addonFS(), os.Stdout)
+		}
 	case "open-thunderbird": // the headless instance holds the profile: swap it for a window
 		run = func() error {
 			return c.OpenWindow(context.Background(), func(s string) { fmt.Fprintln(os.Stderr, s) })
@@ -130,7 +148,7 @@ func (s *supervisor) reconnect(ctx context.Context, err error) bool {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.c.Run(ctx, nil, "health") == nil {
+	if s.c.Health(ctx) == nil {
 		return false // a real failure, or another caller already recovered
 	}
 	log.Printf("Thunderbird went away (%v); restarting it", err)
@@ -162,6 +180,10 @@ func ensure(ctx context.Context, c *tb.Client) error {
 // each pass so new accounts are picked up.
 func poll(ctx context.Context, c *tb.Client, sv *supervisor, ai bool, wake func()) {
 	p := bg.Poller{Store: sv.st, Mail: c, AI: ai}
+	events, err := c.Events(ctx) // newMail polls at once; the minute poll stays as a fallback
+	if err != nil {
+		log.Printf("events: %v", err)
+	}
 	for {
 		fs, err := c.Folders(ctx)
 		if err != nil {
@@ -180,10 +202,22 @@ func poll(ctx context.Context, c *tb.Client, sv *supervisor, ai bool, wake func(
 		if sv.reconnect(ctx, err) {
 			continue // poll again right away: mail may have arrived meanwhile
 		}
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(time.Minute):
+		for len(events) > 0 { // events from during the pass: it already saw that mail
+			<-events
+		}
+		tick := time.After(time.Minute)
+		for waiting := true; waiting; {
+			select {
+			case <-ctx.Done():
+				return
+			case e, ok := <-events:
+				if !ok {
+					events = nil // nil blocks: back to the minute poll
+				}
+				waiting = e.Name != "newMail"
+			case <-tick:
+				waiting = false
+			}
 		}
 	}
 }

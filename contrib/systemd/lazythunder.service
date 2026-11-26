@@ -8,7 +8,7 @@ EnvironmentFile=-%h/.config/lazythunder/env
 ExecStart=%h/.local/bin/lazythunder daemon
 Restart=on-failure
 RestartSec=10
-# Stop only the daemon: the bridge and headless Thunderbird it started share its cgroup.
+# Stop only the daemon: the headless Thunderbird it started (and its hub) share its cgroup.
 KillMode=process
 
 [Install]

@@ -220,7 +220,7 @@ func (s *imageStore) put(k, path string, img image.Image, err error) {
 type imagesMsg struct{ msgID int }
 
 // httpClient refuses loopback/private/link-local targets (also after
-// redirects), so an email can't make us poke local services such as tb-bridge.
+// redirects), so an email can't make us poke local services.
 var httpClient = &http.Client{
 	Timeout:   15 * time.Second,
 	Transport: &http.Transport{DialContext: (&net.Dialer{Timeout: 10 * time.Second, Control: publicOnly}).DialContext},
