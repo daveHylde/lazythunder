@@ -1,4 +1,4 @@
-package ui
+package bg
 
 import "testing"
 
@@ -24,8 +24,14 @@ func TestSafeLink(t *testing.T) {
 		{"https://user@x.no/", "x", false},
 		{"https://x.no:8443/", "x", false},
 	} {
-		if got := safeLink(c.url, c.label); got != c.want {
-			t.Errorf("safeLink(%q, %q) = %v", c.url, c.label, got)
+		if got := SafeLink(c.url, c.label); got != c.want {
+			t.Errorf("SafeLink(%q, %q) = %v", c.url, c.label, got)
 		}
+	}
+}
+
+func TestOneLine(t *testing.T) {
+	if got := OneLine("a\nb\x1b[31m c\u202e"); got != "a b[31m c" {
+		t.Fatalf("got %q", got)
 	}
 }

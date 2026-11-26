@@ -8,12 +8,17 @@ import (
 )
 
 // Summary is the sidebar's one-line gist of an email, what to do about it,
-// and a short title for each numbered link.
+// a short title for each numbered link, and how the list should tag it.
 type Summary struct {
-	Summary string     `json:"summary"`
-	Actions []Action   `json:"actions"`
-	Links   []LinkInfo `json:"links"`
+	Summary  string     `json:"summary"`
+	Actions  []Action   `json:"actions"`
+	Links    []LinkInfo `json:"links"`
+	Category string     `json:"category"` // one of Categories
+	Priority string     `json:"priority"` // high, normal or low
 }
+
+// Categories are the kinds of mail Summarize sorts into.
+var Categories = []string{"reply-needed", "action", "fyi", "newsletter", "receipt", "notification", "spam"}
 
 // Action is a to-do, optionally done through link number Link (0 = none).
 type Action struct {
@@ -33,7 +38,9 @@ Then list up to 3 concrete action items for the recipient, each under 10 words; 
 Newsletters, receipts and notifications usually need no action.
 Links in the email are marked [n] and listed under "Links". If an action is done by opening one of them, set its "link" to that n, else 0.
 For every listed link, give a title of at most 5 words saying what it opens (e.g. "Order status", "Pay invoice", "Read full article"), in the email's language.
-Set "suspicious" when a link looks like phishing: it asks for a login or payment on a site that does not fit the sender, or the text and target disagree.`
+Set "suspicious" when a link looks like phishing: it asks for a login or payment on a site that does not fit the sender, or the text and target disagree.
+Set "category" to one of: "reply-needed" (the sender expects an answer from the recipient), "action" (something to do, but no reply), "fyi" (worth reading, nothing to do), "newsletter", "receipt" (orders, invoices, bookings, payments), "notification" (automated alerts and updates), "spam".
+Set "priority" to "high" when it is urgent or has a near deadline, "low" for newsletters, notifications and spam, otherwise "normal".`
 
 var summarySchema = map[string]any{
 	"type": "object",
@@ -50,8 +57,10 @@ var summarySchema = map[string]any{
 				"suspicious": map[string]any{"type": "boolean"}},
 			"required": []string{"n", "title", "suspicious"},
 		}},
+		"category": map[string]any{"type": "string", "enum": Categories},
+		"priority": map[string]any{"type": "string", "enum": []string{"high", "normal", "low"}},
 	},
-	"required": []string{"summary", "actions", "links"},
+	"required": []string{"summary", "actions", "links", "category", "priority"},
 }
 
 // MaxLinks is how many numbered links Summarize titles.
@@ -74,7 +83,7 @@ func (a *Agent) Summarize(ctx context.Context, from, subject, body string, links
 	}
 	var sum Summary
 	err := a.structured(ctx, "summary", summaryPrompt, fmt.Sprintf("From: %s\nSubject: %s\n\n%s", from, subject, body),
-		summarySchema, 300+25*min(len(links), MaxLinks), &sum)
+		summarySchema, 320+25*min(len(links), MaxLinks), &sum)
 	sum.Summary = strings.TrimSpace(sum.Summary)
 	return sum, err
 }

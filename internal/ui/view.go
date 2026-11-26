@@ -9,7 +9,9 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 
+	"github.com/daveHylde/lazythunder/internal/bg"
 	"github.com/daveHylde/lazythunder/internal/render"
+	"github.com/daveHylde/lazythunder/internal/store"
 	"github.com/daveHylde/lazythunder/internal/tb"
 )
 
@@ -168,7 +170,7 @@ func (m Model) viewMessages(w, h int) string {
 		if x.Flagged {
 			mark = flagSt.Render("★")
 		}
-		switch m.replied[x.ID].kind {
+		switch m.replied[x.ID].Kind {
 		case 'r':
 			mark += replySt.Render("↩")
 		case 'f':
@@ -177,7 +179,7 @@ func (m Model) viewMessages(w, h int) string {
 			mark += " "
 		}
 		who := ansi.Truncate(render.Sanitize(name(x.Author)), 20, "…")
-		subj := render.Sanitize(x.Subject)
+		subj := noteTag(m.meta[x.HeaderMessageID]) + render.Sanitize(x.Subject)
 		if merged {
 			acct := m.accounts[x.Folder.AccountID].Name
 			subj = dim.Render(ansi.Truncate(acct, 14, "…")+" ") + subj
@@ -195,6 +197,25 @@ func (m Model) viewMessages(w, h int) string {
 		lines = append(lines, dim.Render("(empty)"))
 	}
 	return panel(title, lines, w, h, m.focus == pMessages)
+}
+
+// categoryTags are the list's short names for note categories; fyi has none.
+var categoryTags = map[string]string{"reply-needed": "reply", "action": "act", "newsletter": "news",
+	"receipt": "rcpt", "notification": "note", "spam": "spam"}
+
+// noteTag is the dim marker before a subject: "!" for high priority, then the category.
+func noteTag(n store.Meta) string {
+	var out string
+	if n.Priority == "high" {
+		out = errSt.Render("!")
+	}
+	if t := categoryTags[n.Category]; t != "" {
+		out += dim.Render(t)
+	}
+	if out != "" {
+		out += " "
+	}
+	return out
 }
 
 func (m Model) viewDetail(w, h int) string {
@@ -311,20 +332,20 @@ func (m Model) renderChat() string {
 
 // summaryBlock is the AI summary shown under the message headers.
 func (m Model) summaryBlock(hdr string, w int) string {
-	if !m.ag.Enabled() {
+	if !m.ag.Enabled() || m.st == nil { // no store: no notes
 		return ""
 	}
-	sum, state, errText := m.sum.get(hdr)
+	n := m.noteFor(hdr)
 	var text string
-	switch state {
+	switch n.state {
 	case sumDone:
-		text = render.Text(sum.Summary, w-2)
+		text = render.Text(n.sum.Summary, w-2)
 	case sumRunning:
 		text = dim.Render("summarizing…")
 	case sumQueued:
 		text = dim.Render("queued for a summary")
 	case sumFailed:
-		text = errSt.Render(ansi.Truncate("AI unavailable: "+oneLine(render.Sanitize(errText)), w-2, "…"))
+		text = errSt.Render(ansi.Truncate("AI unavailable: "+bg.OneLine(render.Sanitize(n.errText)), w-2, "…"))
 	default:
 		text = dim.Render("rest on the message for a summary")
 	}
@@ -370,22 +391,22 @@ func (m Model) renderMessage(x tb.FullMessage) (string, []string, []link) {
 	}
 	b.WriteString(render.Body(x.Parts.Text, x.Parts.HTML, render.Opts{Width: w, Styled: true, Links: true, PreferHTML: true,
 		Image: image, CellW: cw, CellH: ch, ImageRows: max(3, m.preview.Height-1), ImageWidth: paneW,
-		BlankImages: m.inlineSixel(), SafeLink: safeLink, OnLink: onLink}))
+		BlankImages: m.inlineSixel(), SafeLink: bg.SafeLink, OnLink: onLink}))
 	return b.String(), misses, links
 }
 
 // renderOwnReply is the user's earlier reply (or a forward note), dimmed
 // behind a ┃ gutter, separated from the message it answers.
-func (m Model) renderOwnReply(id int, r replyInfo, w int) string {
+func (m Model) renderOwnReply(id int, r store.Reply, w int) string {
 	var b strings.Builder
 	gutter := replySt.Render("┃ ")
 	line := func(s string) { b.WriteString(gutter + dim.Render(s) + "\n") }
 	verb := "↩ You replied"
-	if r.kind == 'f' {
+	if r.Kind == 'f' {
 		verb = "→ You forwarded this"
 	}
-	line(fmt.Sprintf("%s · %s · to %s", verb, r.date.Local().Format("Mon 02 Jan 15:04"), render.Sanitize(name(r.to))))
-	if r.kind == 'r' {
+	line(fmt.Sprintf("%s · %s · to %s", verb, r.Date.Local().Format("Mon 02 Jan 15:04"), render.Sanitize(name(r.To))))
+	if r.Kind == 'r' {
 		if m.reply != nil && m.reply.forID == id {
 			body := render.Body(m.reply.msg.Parts.Text, m.reply.msg.Parts.HTML, render.Opts{Width: w - 2, StripQuotes: true})
 			for _, l := range strings.Split(body, "\n") {
@@ -456,6 +477,7 @@ const helpText = `lazythunder — keys
                U  unsubscribe without a browser (one-click, mail, or the agent on the page), then trash
                A  attachments (enter preview, d download, o open)
                list: ● unread  ★ starred  ↩ you replied  → you forwarded  ▌ selected
+               tags: ! high priority  reply  act  news  rcpt (receipt)  note (notification)  spam
 
  agent         :  ask the agent (it can search, read, and act with your y/n)
                z  summarize selected message/thread

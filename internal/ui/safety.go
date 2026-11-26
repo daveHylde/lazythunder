@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/daveHylde/lazythunder/internal/render"
+	"github.com/daveHylde/lazythunder/internal/bg"
 	"github.com/daveHylde/lazythunder/internal/tb"
 )
 
@@ -26,23 +26,6 @@ const (
 	attRisky                // never previewed; opening needs explicit confirmation
 )
 
-var riskyExts = map[string]string{}
-
-func init() {
-	for reason, exts := range map[string]string{
-		"an executable":                        "exe msi com scr pif cpl dll so dylib bin run appimage apk app deb rpm jar msix appx",
-		"a script":                             "bat cmd vbs vbe js jse mjs wsf wsh ps1 psm1 sh bash zsh fish py pyw pl rb php hta reg scpt applescript command",
-		"a shortcut":                           "lnk url desktop webloc inf settingcontent-ms",
-		"an archive":                           "zip rar 7z tar gz tgz bz2 xz zst cab arj lzh ace iso img dmg vhd vhdx",
-		"a macro Office file":                  "docm dotm xlsm xltm xlam xlsb pptm potm ppsm ppam sldm one",
-		"a web page (scripts run when opened)": "html htm xhtml svg mht mhtml",
-	} {
-		for _, e := range strings.Fields(exts) {
-			riskyExts["."+e] = reason
-		}
-	}
-}
-
 // classify decides by name and declared type. Every dot-extension counts, so
 // "invoice.pdf.exe" is an executable, and it checks both the raw name and the
 // name the file is saved under (invisible characters, bidi overrides and path
@@ -51,14 +34,14 @@ func classify(name, contentType string) (attKind, string) {
 	ct := strings.ToLower(contentType)
 	for _, n := range []string{name, safeName(name), stripAll(name)} {
 		for _, part := range strings.Split(strings.ToLower(strings.TrimSpace(n)), ".")[1:] {
-			if r, ok := riskyExts["."+strings.Trim(part, " \t/\\")]; ok {
+			if r, ok := bg.RiskyExts["."+strings.Trim(part, " \t/\\")]; ok {
 				return attRisky, r
 			}
 		}
 	}
 	for _, t := range []string{"x-msdownload", "x-executable", "x-sh", "javascript", "x-msdos-program", "vnd.microsoft.portable-executable", "x-dosexec", "java-archive", "x-shellscript", "html", "zip", "x-rar", "x-7z", "macroenabled"} {
 		if strings.Contains(ct, t) {
-			return attRisky, "declared as " + oneLine(contentType)
+			return attRisky, "declared as " + bg.OneLine(contentType)
 		}
 	}
 	ext := strings.ToLower(filepath.Ext(name))
@@ -92,9 +75,6 @@ func isInvisibleRune(r rune) bool {
 	return r >= 0x200b && r <= 0x200f || r >= 0x202a && r <= 0x202e || r >= 0x2060 && r <= 0x2069 ||
 		r == 0xfeff || r == 0x00ad || r == 0x034f || r == 0x180e
 }
-
-// oneLine makes untrusted text safe for a single UI row: no escapes, no newlines.
-func oneLine(s string) string { return strings.Join(strings.Fields(render.Sanitize(s)), " ") }
 
 // sniffRisky checks a downloaded file's first bytes: names and declared types
 // lie, so executables, scripts, launchers, archives and active documents are

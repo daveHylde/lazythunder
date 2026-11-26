@@ -2,6 +2,7 @@ package ui
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/cookiejar"
@@ -10,7 +11,8 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/daveHylde/lazythunder/internal/render"
+	"github.com/daveHylde/lazythunder/internal/bg"
+	"github.com/daveHylde/lazythunder/internal/store"
 	"github.com/daveHylde/lazythunder/internal/tb"
 	"github.com/daveHylde/lazythunder/internal/unsub"
 )
@@ -29,18 +31,31 @@ func (m Model) startUnsubscribe(x tb.Message) (tea.Model, tea.Cmd) {
 		m.status = "open the message first"
 		return m, nil
 	}
-	full, c, ctx, me := *m.full, m.c, m.ctx, m.recipientIdentity(x)
+	full, c, ctx, me, st := *m.full, m.c, m.ctx, m.recipientIdentity(x), m.st
 	m.status = "looking for an unsubscribe option…"
 	return m, func() tea.Msg {
+		if ms, ok := storedUnsub(st, x.HeaderMessageID); ok {
+			return unsubOptsMsg{msg: x, me: me, methods: ms}
+		}
 		h, err := c.Headers(ctx, x.ID)
 		if err != nil {
 			return unsubOptsMsg{msg: x, err: err}
 		}
-		var links [][2]string
-		render.Body(full.Parts.Text, full.Parts.HTML, render.Opts{PreferHTML: true,
-			OnLink: func(u, label string) { links = append(links, [2]string{u, label}) }})
-		return unsubOptsMsg{msg: x, me: me, methods: unsub.Methods(h, links)}
+		return unsubOptsMsg{msg: x, me: me, methods: unsub.Methods(h, bg.UnsubLinks(full))}
 	}
+}
+
+// storedUnsub returns the methods the background worker found for hdr.
+func storedUnsub(st *store.Store, hdr string) ([]unsub.Method, bool) {
+	if st == nil || hdr == "" {
+		return nil, false
+	}
+	data, ok, err := st.Unsub(hdr)
+	var ms []unsub.Method
+	if !ok || err != nil || json.Unmarshal(data, &ms) != nil {
+		return nil, false // compute it live instead
+	}
+	return ms, true
 }
 
 func (m Model) confirmUnsubscribe(msg unsubOptsMsg) (tea.Model, tea.Cmd) {

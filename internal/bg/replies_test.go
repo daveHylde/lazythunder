@@ -1,4 +1,4 @@
-package ui
+package bg
 
 import (
 	"testing"
@@ -24,31 +24,31 @@ func TestMatchReplies(t *testing.T) {
 		{ID: 14, Subject: "Re: Hei", Recipients: []string{"b@z.no"}, Date: t0.Add(-time.Hour)},              // before the message
 		{ID: 15, Subject: "API integrasjon?", Recipients: []string{"K <k@g.com>"}, Date: t0.Add(time.Hour)}, // reply without Re:
 	}
-	got := matchReplies(msgs, sent)
-	if r := got[1]; r.kind != 'r' || r.sentID != 10 {
+	got := MatchReplies(msgs, sent)
+	if r := got[1]; r.Kind != 'r' || r.SentID != 10 {
 		t.Fatalf("1: %+v (reply should win over later forward)", r)
 	}
 	if _, ok := got[2]; ok {
 		t.Fatal("2: reply to someone else counted")
 	}
-	if r := got[3]; r.kind != 'f' || r.sentID != 13 {
+	if r := got[3]; r.Kind != 'f' || r.SentID != 13 {
 		t.Fatalf("3: %+v", r)
 	}
 	if _, ok := got[4]; ok {
 		t.Fatal("4: earlier sent message counted")
 	}
-	if r := got[5]; r.kind != 'r' || r.sentID != 15 {
+	if r := got[5]; r.Kind != 'r' || r.SentID != 15 {
 		t.Fatalf("5: prefix-less reply missed: %+v", r)
 	}
 }
 
 func TestSplitSubject(t *testing.T) {
 	for in, want := range map[string]string{"Re: SV: Fwd: Hei": "hei", "AW[2]: Test": "test", "Retur booket": "retur booket"} {
-		if _, n := splitSubject(in); n != want {
+		if _, n := SplitSubject(in); n != want {
 			t.Errorf("%q -> %q, want %q", in, n, want)
 		}
 	}
-	if k, _ := splitSubject("Retur booket"); k != 0 {
+	if k, _ := SplitSubject("Retur booket"); k != 0 {
 		t.Error("'Retur' must not count as a Re: prefix")
 	}
 }

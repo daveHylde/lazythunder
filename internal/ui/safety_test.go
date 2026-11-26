@@ -51,9 +51,3 @@ func TestPDFTextSandboxed(t *testing.T) {
 		t.Fatalf("err=%v len=%d", err, len(out))
 	}
 }
-
-func TestOneLine(t *testing.T) {
-	if got := oneLine("a\nb\x1b[31m c\u202e"); got != "a b[31m c" {
-		t.Fatalf("got %q", got)
-	}
-}

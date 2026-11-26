@@ -13,6 +13,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/daveHylde/lazythunder/internal/agent"
+	"github.com/daveHylde/lazythunder/internal/bg"
 	"github.com/daveHylde/lazythunder/internal/render"
 	"github.com/daveHylde/lazythunder/internal/tb"
 	"github.com/daveHylde/lazythunder/internal/termimg"
@@ -57,7 +58,7 @@ func (m *Model) startAttPreview(x tb.FullMessage) tea.Cmd {
 		if kind != attImage && kind != attPDF && kind != attText || a.Size > autoPreviewMB<<20 {
 			continue
 		}
-		p := attPreview{msgID: x.ID, name: oneLine(a.Name), kind: kind, loading: true}
+		p := attPreview{msgID: x.ID, name: bg.OneLine(a.Name), kind: kind, loading: true}
 		m.attPrev = &p // the UI's copy; the goroutine below works on its own
 		if m.attCancel != nil {
 			m.attCancel() // stop the previous message's preview download
@@ -127,7 +128,7 @@ func (m Model) sidebarLines(w, h int) ([]string, *sixelReq) {
 
 	// action items (the summary itself sits at the top of the message)
 	var top []string
-	sum, _, _ := m.sum.get(x.HeaderMessageID)
+	sum := m.noteFor(x.HeaderMessageID).sum
 
 	// To do: action items (with the link that does them), then the other safe links
 	info := linkInfos(sum)
@@ -157,7 +158,7 @@ func (m Model) sidebarLines(w, h int) ([]string, *sixelReq) {
 	if atts := x.Parts.Attachments; len(atts) > 0 {
 		bottom = append(bottom, section(fmt.Sprintf("Attachments (%d) · A", len(atts))))
 		for _, a := range atts {
-			name := oneLine(a.Name)
+			name := bg.OneLine(a.Name)
 			line := fmt.Sprintf("📎 %s %s", name, dim.Render(humanSize(a.Size)))
 			if kind, why := classify(a.Name, a.ContentType); kind == attRisky {
 				line = riskySt.Render("⚠ "+name) + " " + dim.Render(why)
@@ -170,7 +171,7 @@ func (m Model) sidebarLines(w, h int) ([]string, *sixelReq) {
 			case p.loading:
 				bottom = append(bottom, dim.Render("previewing "+p.name+"…"))
 			case p.err != "":
-				bottom = append(bottom, errSt.Render(ansi.Truncate(oneLine(p.err), w, "…")))
+				bottom = append(bottom, errSt.Render(ansi.Truncate(bg.OneLine(p.err), w, "…")))
 			case p.kind == attImage:
 				lines, req := m.thumbnail(p.key, w, room)
 				if req != nil {
@@ -286,10 +287,10 @@ func linkInfos(sum agent.Summary) map[int]agent.LinkInfo {
 
 // linkTitle is the model's title for link n, else its text, else its host.
 func (m Model) linkTitle(n int, info map[int]agent.LinkInfo) string {
-	if t := oneLine(info[n].Title); t != "" {
+	if t := bg.OneLine(info[n].Title); t != "" {
 		return t
 	}
-	if t := oneLine(m.links[n-1].label); t != "" && !strings.Contains(t, "://") {
+	if t := bg.OneLine(m.links[n-1].label); t != "" && !strings.Contains(t, "://") {
 		return t
 	}
 	u := shortURL(m.links[n-1].url)

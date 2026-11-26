@@ -49,6 +49,9 @@ gives you a fast, keyboard-only way to get through it all.
   headers, and a sidebar **To do** list: action
   items tied to the link that does them, followed by every other safe link with a short title of
   what it opens. Type `o` and the number to open one.
+- **Triage at a glance.** Every summarized message gets a short dim tag before its subject:
+  `reply` (needs your answer), `act` (something to do), `news`, `rcpt` (receipts), `note`
+  (notifications) or `spam`, and `!` when it is urgent. Plain FYI mail gets no tag.
 - **Unsubscribe with one key, no browser.** `U` uses one-click unsubscribe when the sender supports
   it, sends the unsubscribe email when that's the method, or lets the assistant read the web page
   and fill in the form for you. Then the message goes to the trash.
@@ -176,7 +179,9 @@ Everything is set with environment variables.
 | File | |
 |---|---|
 | `~/.config/lazythunder/reply-guide.md` | how AI replies are written: language, tone, length, greeting and sign-off. Created on first use; edit it to taste. |
-| `~/.cache/lazythunder/` | summaries and image cache |
+| `~/.local/share/lazythunder/lazythunder.db` | summaries, category tags, reply status and unsubscribe methods (SQLite, shared with the daemon) |
+| `~/.config/lazythunder/env` | environment for the background daemon (see below) |
+| `~/.cache/lazythunder/` | image cache |
 | `~/.local/state/lazythunder/` | bridge and Thunderbird logs when lazythunder started them |
 
 ## How it works
@@ -187,7 +192,8 @@ Everything is set with environment variables.
 - **Folder lists** page by date windows instead of sorting whole folders, so a 26,000-message
   folder opens as fast as a small one.
 - **Summaries** run in a background queue, one at a time and paused while you chat with the
-  assistant, and are cached by Message-ID. New mail is summarized as it arrives.
+  assistant, and are stored by Message-ID. New mail is summarized as it arrives, by the
+  background daemon if it runs, else by lazythunder itself while it is open.
 - **Unsubscribe** tries RFC 8058 one-click (an HTTP POST) first, then the List-Unsubscribe
   `mailto:` address, sent from the account the mail came to with only its subject and body used.
   Last, the assistant reads the unsubscribe page over plain HTTP and works through it, up to 5
@@ -195,6 +201,42 @@ Everything is set with environment variables.
 - **Replies** are detected by matching later messages in your Sent folders by subject and
   recipient, so very generic subjects can misfire.
 - Every call to Thunderbird has a hard timeout, so a stuck Thunderbird can never freeze the UI.
+
+## Background daemon
+
+`lazythunder daemon` does the background work without the UI: every minute it looks for new
+mail in every inbox, writes its summary, category and priority, finds its unsubscribe options,
+and checks your Sent folders to record what you replied to or forwarded. When you open
+lazythunder, it's all there already. While a daemon runs, the UI leaves this work to it; without
+one, the UI does it while open.
+
+Install it as a systemd user service:
+
+```sh
+go build -o ~/.local/bin/lazythunder .
+mkdir -p ~/.config/systemd/user ~/.config/lazythunder
+cp contrib/systemd/lazythunder.service ~/.config/systemd/user/
+# the AI settings the daemon should use (same variables as above)
+cat > ~/.config/lazythunder/env <<'ENV'
+LAZYTHUNDER_LLM_URL=http://127.0.0.1:8085/v1
+LAZYTHUNDER_MODEL=
+LAZYTHUNDER_API_KEY=
+ENV
+chmod 600 ~/.config/lazythunder/env
+systemctl --user daemon-reload
+systemctl --user enable --now lazythunder
+journalctl --user -u lazythunder -f   # its log
+```
+
+The daemon starts the bridge and `thunderbird --headless` if needed, and keeps retrying while
+Thunderbird is unreachable; if Thunderbird goes away later, it starts it again. While it can't
+reach Thunderbird, an open UI does the work instead. The unit sets `KillMode=process`: the bridge
+and Thunderbird it started live in the service's cgroup, and stopping the service must not kill
+them. Failed summaries are retried up to 3 times, 15 minutes apart. It only processes mail that arrives after it first looks at a
+folder; older mail is summarized when you rest on it. Everything is stored in
+`~/.local/share/lazythunder/lazythunder.db`. The old summary cache
+(`~/.cache/lazythunder/summaries-v2.json`) is imported on first start and then removed; a
+corrupt one is renamed to `summaries-v2.json.bad`.
 
 ## Privacy note
 

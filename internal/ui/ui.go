@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/charmbracelet/bubbles/key"
@@ -17,7 +18,9 @@ import (
 	"golang.org/x/sys/unix"
 
 	"github.com/daveHylde/lazythunder/internal/agent"
+	"github.com/daveHylde/lazythunder/internal/bg"
 	"github.com/daveHylde/lazythunder/internal/render"
+	"github.com/daveHylde/lazythunder/internal/store"
 	"github.com/daveHylde/lazythunder/internal/tb"
 	"github.com/daveHylde/lazythunder/internal/termimg"
 )
@@ -45,6 +48,9 @@ const pageSize = 100
 
 // prog lets background goroutines (the agent) talk to the UI.
 var prog *tea.Program
+
+// tbReady lets our background worker start once Thunderbird answers.
+var tbReady atomic.Bool
 
 type Model struct {
 	c   *tb.Client
@@ -77,8 +83,13 @@ type Model struct {
 	full          *tb.FullMessage
 	previewFailed int // message whose preview failed to load (its error is shown)
 	images        *imageStore
-	sum           *summarizer
-	sidebar       bool // v toggles the message sidebar (summary, actions, links, attachments)
+	st            *store.Store // nil when the database could not be opened: no notes
+	storeErr      string
+	worker        *bg.Worker
+	dataVer       int64                 // store.DataVersion last seen
+	meta          map[string]store.Meta // note tags of the listed messages, by Message-ID
+	note          noteView              // the open message's note, cached: View never reads the store
+	sidebar       bool                  // v toggles the message sidebar (summary, actions, links, attachments)
 	attPrev       *attPreview
 	attCancel     context.CancelFunc
 	cellW         int // terminal cell size in px (0 if unknown)
@@ -89,7 +100,7 @@ type Model struct {
 	viewGen      int // bumped when the list changes view; stale async results are dropped
 	viewCtx      context.Context
 	cancelView   context.CancelFunc
-	replied      map[int]replyInfo
+	replied      map[int]store.Reply
 	reply        *loadedReply
 	replyLoading int
 
@@ -189,13 +200,32 @@ func Run(c *tb.Client, ag *agent.Agent) error {
 	ti.Prompt = "> "
 	m := Model{c: c, ag: ag, ctx: context.Background(), input: ti, accounts: map[string]tb.Account{},
 		preview: newViewport(), agentVP: newViewport(), attVP: newViewport(), status: "connecting to Thunderbird…",
-		images: newImageStore(), replied: map[int]replyInfo{}, sum: newSummarizer(ag, c), sidebar: true}
+		images: newImageStore(), replied: map[int]store.Reply{}, sidebar: true}
 	defer m.images.close()
+	if st, err := openStore(); st == nil {
+		m.storeErr = "notes unavailable: " + err.Error()
+		m.err = m.storeErr
+	} else {
+		if err != nil { // the store works; only the old cache didn't come along
+			m.storeErr = "old summary cache: " + err.Error()
+			m.err = m.storeErr
+		}
+		defer st.Close() // deferred first, so it runs after the worker has stopped
+		m.st = st
+		m.worker = &bg.Worker{Store: st, Mail: c, AI: ag, Name: fmt.Sprintf("tui-%d", os.Getpid())}
+		ctx, stop := context.WithCancel(context.Background())
+		done := make(chan struct{})
+		defer func() { stop(); <-done }()
+		go func() {
+			defer close(done)
+			m.worker.Run(ctx, func() bool { return tbReady.Load() && daemonDown(st) })
+		}()
+	}
 	prog = tea.NewProgram(m, tea.WithAltScreen())
-	ctx, stop := context.WithCancel(context.Background())
-	defer stop()
-	go m.sum.run(ctx, func(hdr string) { prog.Send(summaryMsg{hdr}) })
-	_, err := prog.Run()
+	final, err := prog.Run()
+	if fm, ok := final.(Model); ok && fm.agentBusy {
+		fm.setPause(false) // quit mid-chat: free the workers now, not in 10 minutes
+	}
 	os.Stdout.WriteString(autowrapOn)
 	return err
 }
@@ -217,8 +247,24 @@ func newViewport() viewport.Model {
 func (m Model) Init() tea.Cmd {
 	return func() tea.Msg {
 		err := m.c.Ensure(m.ctx, func(s string) { go prog.Send(statusMsg(s)) })
+		tbReady.Store(err == nil)
 		return readyMsg{err}
 	}
+}
+
+// openStore opens the shared database and takes over the old JSON summary
+// cache (idempotent: the file is removed once imported). An import error
+// comes with a usable store.
+func openStore() (*store.Store, error) {
+	path, err := store.DefaultPath()
+	if err != nil {
+		return nil, err
+	}
+	st, err := store.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	return st, st.ImportJSON(bg.LegacyCache())
 }
 
 // ---- commands ----
@@ -309,14 +355,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.status = "not connected (F5 to retry, q to quit)"
 			return m, nil
 		}
-		m.ready, m.status = true, "connected"
-		return m, m.loadFolders()
+		m.ready, m.status, m.err = true, "connected", m.storeErr
+		return m, tea.Batch(m.loadFolders(), nextDataCheck())
 	case foldersMsg:
 		if msg.err != nil {
 			m.err = msg.err.Error()
 			return m, nil
 		}
-		m.folders = m.folders[:0]
+		m.folders = nil // a fresh slice: pollNewMail's goroutine may still read the old one
 		for _, f := range msg.folders {
 			if f.Depth > 0 {
 				m.folders = append(m.folders, f)
@@ -393,6 +439,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		m.hasMore, m.before = msg.more, msg.next
+		m.loadMeta()
+		m.applyStoredReplies()
 		m.status = fmt.Sprintf("%d messages", len(m.msgs))
 		if m.hasMore {
 			m.status += fmt.Sprintf(" since %s (more below)", m.before.Local().Format("2006-01-02"))
@@ -416,13 +464,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.seq != m.previewSeq || !ok || x.ID != msg.id {
 			return m, nil
 		}
-		m.sum.enqueue(x.ID, x.HeaderMessageID, true) // resting on it: summarize this one next
+		note := m.enqueueNote(x.ID, x.HeaderMessageID) // resting on it: summarize this one next
 		if x.Read {
-			return m, nil
+			return m, note
 		}
 		m.msgs[m.mcur].Read = true
 		c, ctx := m.c, m.ctx
-		return m, m.act("", nil, func() error { return c.Mark(ctx, []int{x.ID}, "read") })
+		return m, tea.Batch(note, m.act("", nil, func() error { return c.Mark(ctx, []int{x.ID}, "read") }))
 	case previewMsg:
 		if msg.seq != m.previewSeq {
 			return m, nil
@@ -437,6 +485,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.full = &msg.m
+		m.loadNote()
 		cmd := m.refreshPreview(true)
 		reply := m.maybeLoadReply()
 		att := m.startAttPreview(msg.m)
@@ -472,16 +521,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.reply = &loadedReply{forID: msg.forID, msg: msg.msg}
 		cmd := m.refreshPreview(false)
 		return m, cmd
-	case summaryMsg:
-		if m.full != nil && m.full.HeaderMessageID == msg.hdr { // the open message's summary sits in the preview
-			before := m.preview.TotalLineCount()
-			cmd := m.refreshPreview(false)
-			if off := m.preview.YOffset; off > 0 { // the summary sits above the body: keep the text in place
-				m.preview.SetYOffset(off + m.preview.TotalLineCount() - before)
-			}
-			return m, cmd
+	case dataTick:
+		return m.checkData()
+	case noteQueuedMsg:
+		if m.loadNote() && m.full != nil {
+			return m, m.refreshSummary()
 		}
-		return m, nil // the sidebar reads the summarizer on render
+		return m, nil
 	case pollTick:
 		return m, m.pollNewMail()
 	case newMailMsg:
@@ -570,7 +616,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case agentReplyMsg:
 		m.agentBusy, m.agentState = false, ""
-		m.sum.paused.Store(false)
+		m.setPause(false)
 		if m.confirm != nil && m.confirm.reply != nil { // agent ended (e.g. cancelled) while asking
 			m.confirm, m.mode = nil, m.modeAfterConfirm()
 		}
@@ -739,6 +785,8 @@ func (m Model) searchResults(msg listMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 	m.searchLeft--
+	m.loadMeta()
+	m.applyStoredReplies()
 	m.status = fmt.Sprintf("%d messages", len(m.msgs))
 	if m.searchLeft > 0 {
 		m.status += " · searching message text…"
@@ -757,7 +805,7 @@ func (m Model) show(v listView) (tea.Model, tea.Cmd) {
 		m.cancelView() // stop reply-status lookups for the old view
 	}
 	m.viewCtx, m.cancelView = context.WithCancel(m.ctx)
-	m.replied = map[int]replyInfo{}
+	m.replied = map[int]store.Reply{}
 	m.status = "loading " + v.title + "…"
 	return m, tea.Batch(m.loadList(false), m.schedulePreview())
 }
@@ -1184,7 +1232,7 @@ func (m Model) askAgent(q string) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	m.showAgent, m.agentBusy = true, true
-	m.sum.paused.Store(true) // one model slot: the chat goes first
+	m.setPause(true)
 	m.say("you: " + q)
 	ctx, cancel := context.WithCancel(m.ctx)
 	m.agentStop = cancel

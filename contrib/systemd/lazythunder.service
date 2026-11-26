@@ -1,0 +1,15 @@
+[Unit]
+Description=lazythunder background daemon (mail notes, reply status, unsubscribe methods)
+After=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=-%h/.config/lazythunder/env
+ExecStart=%h/.local/bin/lazythunder daemon
+Restart=on-failure
+RestartSec=10
+# Stop only the daemon: the bridge and headless Thunderbird it started share its cgroup.
+KillMode=process
+
+[Install]
+WantedBy=default.target

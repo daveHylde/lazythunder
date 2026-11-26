@@ -2,29 +2,20 @@ package ui
 
 import (
 	"context"
-	"regexp"
-	"strings"
 	"sync"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/daveHylde/lazythunder/internal/bg"
+	"github.com/daveHylde/lazythunder/internal/store"
 	"github.com/daveHylde/lazythunder/internal/tb"
 )
-
-// replyInfo says the user replied to ('r') or forwarded ('f') a message, with
-// the sent message that did it.
-type replyInfo struct {
-	kind   byte
-	sentID int
-	date   time.Time
-	to     string
-}
 
 type (
 	replyStatusMsg struct {
 		gen    int
-		status map[int]replyInfo
+		status map[int]store.Reply
 	}
 	sentReplyMsg struct {
 		forID int
@@ -37,80 +28,6 @@ type (
 type loadedReply struct {
 	forID int
 	msg   tb.FullMessage
-}
-
-var rePrefix = regexp.MustCompile(`(?i)^\s*((re|sv|aw|antw|fw|fwd|vs|wg|tr|rv)(\[\d+\])?\s*:\s*)+`)
-
-// splitSubject strips reply/forward prefixes. kind is 'r', 'f' or 0 by the first prefix.
-func splitSubject(s string) (kind byte, norm string) {
-	p := rePrefix.FindString(s)
-	norm = strings.ToLower(strings.TrimSpace(s[len(p):]))
-	switch first := strings.ToLower(strings.TrimSpace(p)); {
-	case first == "":
-	case strings.HasPrefix(first, "re"), strings.HasPrefix(first, "sv"), strings.HasPrefix(first, "aw"), strings.HasPrefix(first, "antw"):
-		kind = 'r'
-	default:
-		kind = 'f'
-	}
-	return kind, norm
-}
-
-// addrOf extracts the lower-cased email address from "Name <a@b>".
-func addrOf(a string) string {
-	if i, j := strings.LastIndex(a, "<"), strings.LastIndex(a, ">"); i >= 0 && j > i {
-		a = a[i+1 : j]
-	}
-	return strings.ToLower(strings.TrimSpace(a))
-}
-
-// matchReplies marks msgs answered by a sent message: a later message with the
-// same subject (Re: or no prefix: some clients drop it) sent to the message's
-// author is a reply (wins); a later Fwd: of it is a forward. shortcut: subject matching, so generic subjects can misfire;
-// exact matching would need each message's References via `tb thread`.
-func matchReplies(msgs, sent []tb.Message) map[int]replyInfo {
-	type cand struct {
-		kind byte
-		m    tb.Message
-	}
-	bySubj := map[string][]cand{}
-	for _, s := range sent {
-		k, n := splitSubject(s.Subject)
-		if k == 0 {
-			k = 'r'
-		}
-		if n != "" {
-			bySubj[n] = append(bySubj[n], cand{k, s})
-		}
-	}
-	out := map[int]replyInfo{}
-	for _, m := range msgs {
-		_, n := splitSubject(m.Subject)
-		from := addrOf(m.Author)
-		for _, c := range bySubj[n] {
-			if !c.m.Date.After(m.Date) || c.m.ID == m.ID {
-				continue
-			}
-			to := ""
-			if len(c.m.Recipients) > 0 {
-				to = c.m.Recipients[0]
-			}
-			if c.kind == 'r' {
-				hit := false
-				for _, r := range append(c.m.Recipients, c.m.CcList...) {
-					hit = hit || addrOf(r) == from
-				}
-				if !hit {
-					continue
-				}
-			}
-			cur, seen := out[m.ID]
-			// the first answer after the message is the one that replied to it
-			if !seen || c.kind == 'r' && cur.kind == 'f' || c.kind == cur.kind && c.m.Date.Before(cur.date) {
-				out[m.ID] = replyInfo{kind: c.kind, sentID: c.m.ID, date: c.m.Date, to: to}
-			}
-		}
-	}
-	return out
 }
 
 // loadReplyStatus looks in the Sent folders of msgs' accounts for each
@@ -139,12 +56,11 @@ func (m Model) loadReplyStatus(msgs []tb.Message) tea.Cmd {
 	}
 	subjects := map[string]bool{}
 	for _, x := range msgs {
-		// tb's subject filter is case-sensitive: search the original spelling
-		if raw := strings.TrimSpace(x.Subject[len(rePrefix.FindString(x.Subject)):]); len(raw) >= 3 { // tiny subjects would match everything
+		if raw := bg.SearchSubject(x.Subject); raw != "" {
 			subjects[raw] = true
 		}
 	}
-	c, ctx, gen := m.c, m.viewCtx, m.viewGen
+	c, ctx, gen, st := m.c, m.viewCtx, m.viewGen, m.st
 	if ctx == nil {
 		ctx = m.ctx
 	}
@@ -184,7 +100,15 @@ func (m Model) loadReplyStatus(msgs []tb.Message) tea.Cmd {
 		}
 		close(queue)
 		wg.Wait()
-		return replyStatusMsg{gen: gen, status: matchReplies(msgs, sent)}
+		status := bg.MatchReplies(msgs, sent)
+		if st != nil {
+			for _, x := range msgs {
+				if r, ok := status[x.ID]; ok && x.HeaderMessageID != "" {
+					st.PutReply(x.HeaderMessageID, r) // shortcut: a failed write only costs the next start a lookup
+				}
+			}
+		}
+		return replyStatusMsg{gen: gen, status: status}
 	}
 }
 
@@ -195,7 +119,7 @@ func (m *Model) maybeLoadReply() tea.Cmd {
 	}
 	id := m.full.ID
 	info, ok := m.replied[id]
-	if !ok || info.kind != 'r' || m.replyLoading == id || m.reply != nil && m.reply.forID == id {
+	if !ok || info.Kind != 'r' || m.replyLoading == id || m.reply != nil && m.reply.forID == id {
 		return nil
 	}
 	m.replyLoading = id
@@ -203,7 +127,38 @@ func (m *Model) maybeLoadReply() tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		defer cancel()
-		msg, err := c.Read(ctx, info.sentID)
+		msg, err := c.Read(ctx, info.SentID)
 		return sentReplyMsg{forID: id, msg: msg, err: err}
 	}
+}
+
+// applyStoredReplies marks listed messages with the reply status on record
+// (found by the poller), without overriding live lookups, and returns the
+// ids it marked.
+func (m *Model) applyStoredReplies() map[int]bool {
+	if m.st == nil {
+		return nil
+	}
+	ids := map[string][]int{} // one Message-ID can be listed more than once (merged inboxes)
+	var hdrs []string
+	for _, x := range m.msgs {
+		if x.HeaderMessageID != "" {
+			ids[x.HeaderMessageID] = append(ids[x.HeaderMessageID], x.ID)
+			hdrs = append(hdrs, x.HeaderMessageID)
+		}
+	}
+	rs, err := m.st.Replies(hdrs)
+	if err != nil {
+		m.err = "reply status: " + err.Error()
+		return nil
+	}
+	added := map[int]bool{}
+	for h, r := range rs {
+		for _, id := range ids[h] {
+			if _, ok := m.replied[id]; !ok {
+				m.replied[id], added[id] = r, true
+			}
+		}
+	}
+	return added
 }

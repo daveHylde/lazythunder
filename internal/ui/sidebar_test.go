@@ -1,40 +1,81 @@
 package ui
 
 import (
+	"encoding/json"
+	"errors"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/daveHylde/lazythunder/internal/agent"
+	"github.com/daveHylde/lazythunder/internal/store"
 	"github.com/daveHylde/lazythunder/internal/tb"
 )
 
-func TestSummarizerQueueOrder(t *testing.T) {
-	s := &summarizer{cache: map[string]agent.Summary{"done": {Summary: "x"}}, failed: map[string]string{},
-		queued: map[string]bool{}, seen: map[string]bool{}, wake: make(chan struct{}, 1), ag: &agent.Agent{URL: "http://x"}}
-	s.enqueue(1, "a", false)
-	s.enqueue(2, "b", false)
-	s.enqueue(3, "c", true)    // jumps ahead
-	s.enqueue(2, "b", true)    // already queued: moves to the front
-	s.enqueue(4, "done", true) // cached: ignored
-	s.enqueue(5, "", true)     // no Message-ID: ignored
-	var got []string
-	for _, j := range s.queue {
-		got = append(got, j.hdr)
+// testStore is a fresh database holding notes (hdr → summary).
+func testStore(t *testing.T, notes map[string]agent.Summary) *store.Store {
+	st, err := store.Open(filepath.Join(t.TempDir(), "t.db"))
+	if err != nil {
+		t.Fatal(err)
 	}
-	if strings.Join(got, ",") != "b,c,a" {
-		t.Fatalf("queue %v", got)
+	t.Cleanup(func() { st.Close() })
+	for h, sum := range notes {
+		b, _ := json.Marshal(sum)
+		if err := st.PutNote(h, b, sum.Category, sum.Priority); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return st
+}
+
+func TestNoteTag(t *testing.T) {
+	for in, want := range map[store.Meta]string{
+		{Category: "reply-needed", Priority: "high"}: "!reply ",
+		{Category: "fyi", Priority: "high"}:          "! ",
+		{Category: "fyi", Priority: "normal"}:        "",
+		{Category: "newsletter", Priority: "low"}:    "news ",
+		{Category: "receipt"}:                        "rcpt ",
+		{}:                                           "",
+	} {
+		if got := ansi.Strip(noteTag(in)); got != want {
+			t.Errorf("%+v: %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestLookupStates(t *testing.T) {
+	st := testStore(t, map[string]agent.Summary{"done": {Summary: "x"}})
+	m := Model{st: st}
+	st.Enqueue("q", 1, 0)
+	st.Enqueue("f", 2, 0)
+	st.Claim("w") // both running
+	st.Claim("w")
+	st.Finish("f", errors.New("boom"))
+	st.Enqueue("q2", 3, 0)
+	for hdr, want := range map[string]sumState{"done": sumDone, "f": sumFailed, "q2": sumQueued, "q": sumRunning, "none": sumNone, "": sumNone} {
+		if got := m.lookup(hdr).state; got != want {
+			t.Errorf("%q: state %v, want %v", hdr, got, want)
+		}
+	}
+	if e := m.lookup("f").errText; e != "boom" {
+		t.Errorf("failed job error %q", e)
+	}
+	if got := (Model{}).lookup("done").state; got != sumNone {
+		t.Error("no store must mean no notes")
 	}
 }
 
 func TestSidebarFitsHeightAndWidth(t *testing.T) {
-	m := Model{ag: &agent.Agent{URL: "http://x"}, sum: &summarizer{cache: map[string]agent.Summary{"h": {Summary: strings.Repeat("ord ", 40), Actions: []agent.Action{{Text: "Gjør noe viktig i dag", Link: 2}, {Text: "Svar Ola"}},
-		Links: []agent.LinkInfo{{N: 1, Title: "Ordrestatus"}, {N: 3, Title: "Svindel", Suspicious: true}}}}}}
+	m := Model{ag: &agent.Agent{URL: "http://x"}, st: testStore(t, map[string]agent.Summary{"h": {Summary: strings.Repeat("ord ", 40), Actions: []agent.Action{{Text: "Gjør noe viktig i dag", Link: 2}, {Text: "Svar Ola"}},
+		Links: []agent.LinkInfo{{N: 1, Title: "Ordrestatus"}, {N: 3, Title: "Svindel", Suspicious: true}}}})}
 	full := tb.FullMessage{}
 	full.HeaderMessageID = "h"
 	full.Parts.Attachments = []tb.Attachment{{Name: "faktura.pdf.exe", ContentType: "application/pdf", Size: 1000}, {Name: "bilde.png", ContentType: "image/png", Size: 5000}}
 	m.full = &full
+	m.loadNote()
+	m.st = nil // rendering must use the cached note, not the store
 	for i := 0; i < 40; i++ {
 		m.links = append(m.links, link{url: "https://x.no/" + strings.Repeat("a", 80), label: ""})
 	}
@@ -62,8 +103,30 @@ func TestSidebarFitsHeightAndWidth(t *testing.T) {
 	}
 }
 
+func TestNoteCache(t *testing.T) {
+	st := testStore(t, nil)
+	m := Model{st: st}
+	full := tb.FullMessage{}
+	full.HeaderMessageID = "h"
+	m.full = &full
+	m.loadNote()
+	if m.loadNote() || m.noteFor("h").state != sumNone {
+		t.Fatal("no note: a reload should change nothing")
+	}
+	st.Enqueue("h", 1, 10)
+	if m.noteFor("h").state != sumNone {
+		t.Fatal("cache read the store")
+	}
+	if !m.loadNote() || m.noteFor("h").state != sumQueued {
+		t.Fatalf("reload missed the queued job: %+v", m.note)
+	}
+	if m.noteFor("other").state != sumNone {
+		t.Fatal("another message got the open message's note")
+	}
+}
+
 func TestSidebarWithAIOff(t *testing.T) {
-	m := Model{ag: &agent.Agent{URL: "off"}, sum: &summarizer{cache: map[string]agent.Summary{}}}
+	m := Model{ag: &agent.Agent{URL: "off"}}
 	full := tb.FullMessage{}
 	full.HeaderMessageID = "h"
 	m.full = &full

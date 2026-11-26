@@ -15,6 +15,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/ansi"
 
+	"github.com/daveHylde/lazythunder/internal/bg"
 	"github.com/daveHylde/lazythunder/internal/render"
 	"github.com/daveHylde/lazythunder/internal/tb"
 )
@@ -65,7 +66,7 @@ func (m Model) openLinkPicker() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	p := &picker{kind: "links", msgID: m.full.ID}
-	sum, _, _ := m.sum.get(m.full.HeaderMessageID)
+	sum := m.noteFor(m.full.HeaderMessageID).sum
 	info := linkInfos(sum)
 	for i, l := range m.links {
 		if n := i + 1; !info[n].Suspicious {
@@ -121,7 +122,7 @@ func (m Model) openAttachmentPicker() (tea.Model, tea.Cmd) {
 	}
 	p := &picker{kind: "attachments", msgID: m.full.ID}
 	for _, a := range m.full.Parts.Attachments {
-		p.items = append(p.items, pickItem{title: oneLine(a.Name), detail: fmt.Sprintf("%s · %s", oneLine(a.ContentType), humanSize(a.Size)), att: a})
+		p.items = append(p.items, pickItem{title: bg.OneLine(a.Name), detail: fmt.Sprintf("%s · %s", bg.OneLine(a.ContentType), humanSize(a.Size)), att: a})
 	}
 	m.picker, m.mode = p, mPicker
 	return m, nil
@@ -334,9 +335,9 @@ func previewAttachment(ctx context.Context, c *tb.Client, store *imageStore, id 
 		return attPreviewMsg{err: err}
 	}
 	if why := sniffRisky(path); why != "" {
-		return attPreviewMsg{err: fmt.Errorf("⚠ %s is really %s: not previewed", oneLine(a.Name), why)}
+		return attPreviewMsg{err: fmt.Errorf("⚠ %s is really %s: not previewed", bg.OneLine(a.Name), why)}
 	}
-	title := oneLine(a.Name)
+	title := bg.OneLine(a.Name)
 	ct := strings.ToLower(a.ContentType)
 	ext := strings.ToLower(filepath.Ext(a.Name))
 	switch {
@@ -360,7 +361,7 @@ func previewAttachment(ctx context.Context, c *tb.Client, store *imageStore, id 
 		}
 		return attPreviewMsg{title: title, text: string(b)}
 	}
-	return attPreviewMsg{err: fmt.Errorf("no preview for %s: o opens it, d downloads it", oneLine(a.ContentType))}
+	return attPreviewMsg{err: fmt.Errorf("no preview for %s: o opens it, d downloads it", bg.OneLine(a.ContentType))}
 }
 
 var textExts = map[string]bool{".txt": true, ".md": true, ".csv": true, ".json": true, ".xml": true, ".log": true,
