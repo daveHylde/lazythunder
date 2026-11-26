@@ -149,11 +149,18 @@ func (m Model) viewMessages(w, h int) string {
 	if m.unread {
 		title += " · unread"
 	}
+	if len(m.marked) > 0 {
+		title += fmt.Sprintf(" · %d selected (esc clears)", len(m.marked))
+	}
 	merged := m.view.accountID == "" // show which account each message is from
 	from, to := window(len(m.msgs), m.mcur, m.listHeight())
 	var lines []string
 	for i := from; i < to; i++ {
 		x := m.msgs[i]
+		sel := " "
+		if m.marked[x.ID] {
+			sel = flagSt.Render("▌")
+		}
 		mark := " "
 		if !x.Read {
 			mark = "●"
@@ -175,7 +182,7 @@ func (m Model) viewMessages(w, h int) string {
 			acct := m.accounts[x.Folder.AccountID].Name
 			subj = dim.Render(ansi.Truncate(acct, 14, "…")+" ") + subj
 		}
-		line := fmt.Sprintf("%s %-6s %-20s %s", mark, shortDate(x.Date), who, subj)
+		line := fmt.Sprintf("%s%s %-6s %-20s %s", sel, mark, shortDate(x.Date), who, subj)
 		if !x.Read {
 			line = unreadSt.Render(line)
 		}
@@ -207,7 +214,7 @@ func (m Model) viewDetail(w, h int) string {
 		return panel(title, strings.Split(m.attVP.View(), "\n"), w, h, true)
 	}
 	if m.showAgent {
-		title := "[2] " + m.model() + " (p: back to email)"
+		title := "[2] " + m.model() + " (esc: back to email)"
 		if m.agentBusy {
 			title = "[2] " + m.model() + " · " + m.agentState
 		}
@@ -302,6 +309,28 @@ func (m Model) renderChat() string {
 	return strings.Join(parts, "\n\n")
 }
 
+// summaryBlock is the AI summary shown under the message headers.
+func (m Model) summaryBlock(hdr string, w int) string {
+	if !m.ag.Enabled() {
+		return ""
+	}
+	sum, state, errText := m.sum.get(hdr)
+	var text string
+	switch state {
+	case sumDone:
+		text = render.Text(sum.Summary, w-2)
+	case sumRunning:
+		text = dim.Render("summarizing…")
+	case sumQueued:
+		text = dim.Render("queued for a summary")
+	case sumFailed:
+		text = errSt.Render(ansi.Truncate("AI unavailable: "+oneLine(render.Sanitize(errText)), w-2, "…"))
+	default:
+		text = dim.Render("rest on the message for a summary")
+	}
+	return sideTitle.Render("✦ ") + strings.ReplaceAll(text, "\n", "\n  ") + "\n"
+}
+
 // renderMessage returns the preview text, the image srcs still to fetch and
 // the message's links.
 func (m Model) renderMessage(x tb.FullMessage) (string, []string, []link) {
@@ -323,6 +352,7 @@ func (m Model) renderMessage(x tb.FullMessage) (string, []string, []link) {
 	for _, a := range x.Parts.Attachments {
 		b.WriteString(dim.Render(fmt.Sprintf("📎 %s (%d KB)", render.Sanitize(a.Name), (a.Size+1023)/1024)) + "\n")
 	}
+	b.WriteString(m.summaryBlock(x.HeaderMessageID, w))
 	b.WriteString(dim.Render(strings.Repeat("─", w)) + "\n")
 	var misses []string
 	image := func(src string) (image.Image, string) {
@@ -385,13 +415,13 @@ func (m Model) viewBottom() string {
 	var hint string
 	switch {
 	case !m.ready:
-		hint = "ctrl+r retry · q quit"
+		hint = "F5 retry · q quit"
 	case m.mode == mPicker && m.picker != nil:
 		hint = m.pickerHelp()
 	case m.mode == mAttView:
 		hint = "j/k scroll · esc back"
 	default:
-		hint = "l folders · r reply · o links · A attachments · i images · e archive · d delete · a agent · ? help"
+		hint = "l folders · r reply · space select · a archive · d delete · C all read · F5 refresh · : agent · ? help"
 	}
 	gap := m.w - ansi.StringWidth(left) - ansi.StringWidth(hint)
 	if gap < 1 { // never let the status line wrap: that scrolls the whole screen
@@ -406,29 +436,32 @@ const helpText = `lazythunder — keys
 
  navigation    tab, 1 2, enter / h             switch between list and message
                l                               folder picker
-               b                               toggle the sidebar (summary, to do + links, attachments)
+               v                               toggle the sidebar (to do + links, attachments)
                j k, g G, ctrl+d ctrl+u         move / scroll (space pages the email)
+               n p                             next / previous unread
                pgup pgdown                     always scroll the email
                enter                           read message (resting 1s on it marks it read)
                u                               toggle unread-only
                /                               search sender + subject (all time) and text (90 days), newest first
-               ctrl+r                          refresh
+               F5                              refresh
 
- message       m  toggle read      F  toggle flag
-               e  archive          d  delete (to trash)
+ message       m  toggle read      S  toggle star (flag)
+               a  archive          d, Del  delete (to trash)
                M  move to folder   c  compose new
                r  reply   R  reply all   f  forward
+               C  mark everything in the folder(s) read
+               space  select in the list; m S a d M then act on all selected (esc clears)
                i  view the message's images full screen (sixel/kitty)
                o  safe links (type n to open [n], enter open, y copy)
                U  unsubscribe without a browser (one-click, mail, or the agent on the page), then trash
                A  attachments (enter preview, d download, o open)
-               list: ● unread  ★ flagged  ↩ you replied  → you forwarded
+               list: ● unread  ★ starred  ↩ you replied  → you forwarded  ▌ selected
 
- agent         a  ask the agent (it can search, read, and act with your y/n)
-               s  summarize selected message/thread
-               w  AI reply from a short intent (follows ~/.config/lazythunder/reply-guide.md)
-               p  back to the email
-               ctrl+l  new conversation      esc  cancel a running request
+ agent         :  ask the agent (it can search, read, and act with your y/n)
+               z  summarize selected message/thread
+               W  AI reply from a short intent (follows ~/.config/lazythunder/reply-guide.md)
+               esc  back to the email (or cancel a running request)
+               X  new conversation
 
  drafts        e edit in $EDITOR · enter save to Drafts · S send · x discard
 

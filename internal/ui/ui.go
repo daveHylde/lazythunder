@@ -78,7 +78,7 @@ type Model struct {
 	previewFailed int // message whose preview failed to load (its error is shown)
 	images        *imageStore
 	sum           *summarizer
-	sidebar       bool // b toggles the message sidebar (summary, actions, links, attachments)
+	sidebar       bool // v toggles the message sidebar (summary, actions, links, attachments)
 	attPrev       *attPreview
 	attCancel     context.CancelFunc
 	cellW         int // terminal cell size in px (0 if unknown)
@@ -111,10 +111,11 @@ type Model struct {
 	confirm     *confirmation
 	draft       *tb.Draft
 	draftCtx    string
-	draftFile   string    // edited file kept after a parse error so the text isn't lost
-	submitting  bool      // a save/send is in flight
-	pending     *tb.Draft // agent draft waiting for the current draft to finish
-	moveIDs     []int     // messages the move picker will move
+	draftFile   string       // edited file kept after a parse error so the text isn't lost
+	submitting  bool         // a save/send is in flight
+	pending     *tb.Draft    // agent draft waiting for the current draft to finish
+	moveIDs     []int        // messages the move picker will move
+	marked      map[int]bool // space-selected message ids; actions apply to all of them
 }
 
 // listView is what the message list shows: one or more folders, or a search.
@@ -160,6 +161,7 @@ type (
 		text   string
 		err    error
 		remove []int // drop these ids from the list
+		reload bool  // reload the list (folder-wide changes)
 	}
 	agentReplyMsg struct {
 		text string
@@ -304,7 +306,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case readyMsg:
 		if msg.err != nil {
 			m.err = msg.err.Error()
-			m.status = "not connected (ctrl+r to retry, q to quit)"
+			m.status = "not connected (F5 to retry, q to quit)"
 			return m, nil
 		}
 		m.ready, m.status = true, "connected"
@@ -380,6 +382,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		} else {
 			m.msgs, m.mcur = msg.msgs, 0
+			if len(m.marked) > 0 { // keep the selection for messages still listed
+				kept := map[int]bool{}
+				for _, x := range m.msgs {
+					if m.marked[x.ID] {
+						kept[x.ID] = true
+					}
+				}
+				m.marked = kept
+			}
 		}
 		m.hasMore, m.before = msg.more, msg.next
 		m.status = fmt.Sprintf("%d messages", len(m.msgs))
@@ -462,12 +473,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmd := m.refreshPreview(false)
 		return m, cmd
 	case summaryMsg:
+		if m.full != nil && m.full.HeaderMessageID == msg.hdr { // the open message's summary sits in the preview
+			before := m.preview.TotalLineCount()
+			cmd := m.refreshPreview(false)
+			if off := m.preview.YOffset; off > 0 { // the summary sits above the body: keep the text in place
+				m.preview.SetYOffset(off + m.preview.TotalLineCount() - before)
+			}
+			return m, cmd
+		}
 		return m, nil // the sidebar reads the summarizer on render
 	case pollTick:
 		return m, m.pollNewMail()
 	case newMailMsg:
 		if msg.n > 0 {
-			m.status = fmt.Sprintf("%d new message(s) · ctrl+r to refresh", msg.n)
+			m.status = fmt.Sprintf("%d new message(s) · F5 to refresh", msg.n)
 			return m, tea.Batch(m.loadFolders(), nextPoll())
 		}
 		return m, nextPoll()
@@ -517,16 +536,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case doneMsg:
 		if msg.err != nil {
 			m.err = msg.err.Error()
+			if msg.reload { // part of a folder-wide change may have gone through; a list reload would clear the error
+				return m, m.loadFolders()
+			}
 			return m, nil
 		}
 		m.err = ""
 		if msg.text != "" {
 			m.status = msg.text
 		}
+		if msg.reload {
+			return m, tea.Batch(m.loadFolders(), m.loadList(false))
+		}
 		if len(msg.remove) > 0 {
 			gone := map[int]bool{}
 			for _, id := range msg.remove {
 				gone[id] = true
+				delete(m.marked, id)
 			}
 			kept := m.msgs[:0]
 			for _, x := range m.msgs {
@@ -725,7 +751,7 @@ func (m Model) searchResults(msg listMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) show(v listView) (tea.Model, tea.Cmd) {
-	m.view, m.msgs, m.mcur = v, nil, 0
+	m.view, m.msgs, m.mcur, m.marked = v, nil, 0, nil
 	m.viewGen++
 	if m.cancelView != nil {
 		m.cancelView() // stop reply-status lookups for the old view
@@ -770,7 +796,7 @@ func (m Model) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		switch s {
 		case "q":
 			return m, tea.Quit
-		case "ctrl+r":
+		case "f5":
 			m.err, m.status = "", "connecting to Thunderbird…"
 			return m, m.Init()
 		}
@@ -792,7 +818,7 @@ func (m Model) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "l":
 		return m.openFolderPicker()
-	case "b":
+	case "v":
 		m.sidebar = !m.sidebar
 		m.layout()
 		cmd := m.refreshPreview(false)
@@ -807,13 +833,10 @@ func (m Model) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.openTab((m.tab + map[string]int{"[": n - 1, "]": 1}[s]) % n)
 	case "/":
 		return m.startInput("search", "search all accounts", "")
-	case "a":
+	case ":":
 		m.showAgent, m.focus = true, pDetail
 		return m.startInput("agent", "ask "+m.model(), "")
-	case "p":
-		m.showAgent = false
-		return m, nil
-	case "ctrl+l":
+	case "X":
 		if m.agentBusy {
 			m.status = m.model() + " is busy (esc to cancel)"
 			return m, nil
@@ -829,11 +852,23 @@ func (m Model) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.unread = !m.unread
 		m.status = map[bool]string{true: "unread only", false: "all messages"}[m.unread]
 		return m, m.loadList(false)
-	case "ctrl+r":
+	case "f5":
 		return m, tea.Batch(m.loadFolders(), m.loadList(false))
+	case "C":
+		return m.markAllRead()
+	case "n", "p":
+		return m.nextUnread(s == "n")
 	case "esc":
 		if m.agentBusy && m.agentStop != nil {
 			m.agentStop()
+			return m, nil
+		}
+		if m.showAgent {
+			m.showAgent = false
+			return m, nil
+		}
+		if len(m.marked) > 0 {
+			m.marked, m.status = nil, "selection cleared"
 			return m, nil
 		}
 		if m.view.folderIDs == nil && m.prevView.title != "" { // leave search results
@@ -899,6 +934,20 @@ func (m Model) keyMessages(s string) (tea.Model, tea.Cmd) {
 			return m, m.act("", nil, func() error { return c.Mark(ctx, []int{x.ID}, "read") })
 		}
 		return m, nil
+	case " ":
+		x, ok := m.selected()
+		if !ok {
+			return m, nil
+		}
+		if m.marked == nil {
+			m.marked = map[int]bool{}
+		}
+		if m.marked[x.ID] {
+			delete(m.marked, x.ID)
+		} else {
+			m.marked[x.ID] = true
+		}
+		s = "j" // and move on, like a file manager
 	}
 	old := m.mcur
 	m.mcur = move(m.mcur, len(m.msgs), s, m.listHeight()/2)
@@ -914,32 +963,126 @@ func (m Model) keyMessages(s string) (tea.Model, tea.Cmd) {
 	return mm, tea.Batch(append(cmds, cmd)...)
 }
 
+// targets is what bulk-capable actions apply to: the space-selected messages
+// in list order, or else the message under the cursor.
+func (m Model) targets() (idx []int, ids []int) {
+	for i, x := range m.msgs {
+		if m.marked[x.ID] {
+			idx, ids = append(idx, i), append(ids, x.ID)
+		}
+	}
+	if len(ids) == 0 && m.mcur < len(m.msgs) {
+		idx, ids = []int{m.mcur}, []int{m.msgs[m.mcur].ID}
+	}
+	return idx, ids
+}
+
+// count describes n messages for status and confirm texts.
+func count(n int) string {
+	if n == 1 {
+		return "1 message"
+	}
+	return fmt.Sprintf("%d messages", n)
+}
+
+// markAllRead marks every message in the current folder(s) read; for search
+// results, just the listed ones.
+func (m Model) markAllRead() (tea.Model, tea.Cmd) {
+	c, ctx := m.c, m.ctx
+	if m.view.folderIDs == nil {
+		var ids []int
+		for i, x := range m.msgs {
+			if !x.Read {
+				ids = append(ids, x.ID)
+				m.msgs[i].Read = true
+			}
+		}
+		if len(ids) == 0 {
+			m.status = "nothing unread"
+			return m, nil
+		}
+		return m, m.act(fmt.Sprintf("marked %s read", count(len(ids))), nil, func() error { return c.Mark(ctx, ids, "read") })
+	}
+	folders := m.view.folderIDs
+	m.confirm = &confirmation{text: fmt.Sprintf("Mark everything in %s as read?", m.view.title),
+		onYes: func() tea.Msg {
+			for _, f := range folders {
+				if err := c.MarkFolderRead(ctx, f); err != nil {
+					return doneMsg{err: err, reload: true}
+				}
+			}
+			return doneMsg{text: "marked all read", reload: true}
+		}}
+	m.mode = mConfirm
+	return m, nil
+}
+
+// nextUnread moves the cursor to the next (or previous) unread loaded message.
+func (m Model) nextUnread(forward bool) (tea.Model, tea.Cmd) {
+	step := map[bool]int{true: 1, false: -1}[forward]
+	for i := m.mcur + step; i >= 0 && i < len(m.msgs); i += step {
+		if !m.msgs[i].Read {
+			m.mcur = i
+			return m, m.schedulePreview()
+		}
+	}
+	if forward && m.hasMore {
+		m.hasMore = false // one page request in flight at a time
+		m.status = "loading more… press n again"
+		return m, m.loadList(true)
+	}
+	m.status = "no more unread"
+	return m, nil
+}
+
 // keyMessageActions handles keys that act on the selected message, from the list or preview.
 func (m Model) keyMessageActions(s string, passthrough tea.Cmd) (tea.Model, tea.Cmd) {
 	x, ok := m.selected()
 	if !ok {
 		return m, passthrough
 	}
-	c, ctx, ids := m.c, m.ctx, []int{x.ID}
+	c, ctx := m.c, m.ctx
+	idx, ids := m.targets()
 	switch s {
-	case "m":
-		flag := map[bool]string{true: "unread", false: "read"}[x.Read]
-		m.msgs[m.mcur].Read = !x.Read
-		return m, m.act("marked "+flag, nil, func() error { return c.Mark(ctx, ids, flag) })
-	case "F", "*":
-		flag := map[bool]string{true: "unflagged", false: "flagged"}[x.Flagged]
-		m.msgs[m.mcur].Flagged = !x.Flagged
-		return m, m.act(flag, nil, func() error { return c.Mark(ctx, ids, flag) })
-	case "e":
-		return m, m.act("archived", ids, func() error { return c.Archive(ctx, ids) })
-	case "d":
-		m.confirm = &confirmation{text: fmt.Sprintf("Move %q to trash?", x.Subject),
-			onYes: m.act("moved to trash", ids, func() error { return c.Delete(ctx, ids) })}
+	case "m", "S":
+		field := func(y *tb.Message) *bool { return &y.Read }
+		names := [2]string{"read", "unread"}
+		if s == "S" {
+			field, names = func(y *tb.Message) *bool { return &y.Flagged }, [2]string{"flagged", "unflagged"}
+		}
+		set := false // any not set yet: set them all, else clear them all
+		for _, i := range idx {
+			set = set || !*field(&m.msgs[i])
+		}
+		flag := names[1]
+		if set {
+			flag = names[0]
+		}
+		for _, i := range idx {
+			*field(&m.msgs[i]) = set
+		}
+		return m, m.act("marked "+count(len(ids))+" "+flag, nil, func() error { return c.Mark(ctx, ids, flag) })
+	case "a":
+		return m, m.act("archived "+count(len(ids)), ids, func() error { return c.Archive(ctx, ids) })
+	case "d", "delete":
+		text := fmt.Sprintf("Move %q to trash?", x.Subject)
+		if len(ids) > 1 {
+			text = fmt.Sprintf("Move %s to trash?", count(len(ids)))
+		}
+		m.confirm = &confirmation{text: text,
+			onYes: m.act("moved "+count(len(ids))+" to trash", ids, func() error { return c.Delete(ctx, ids) })}
 		m.mode = mConfirm
 		return m, nil
 	case "M":
+		acct := m.msgs[idx[0]].Folder.AccountID
+		for _, i := range idx {
+			if m.msgs[i].Folder.AccountID != acct {
+				m.status = "selection spans accounts: move them per account"
+				return m, nil
+			}
+		}
 		m.moveIDs = ids
-		return m.openMovePicker(x.Folder.AccountID)
+		return m.openMovePicker(acct)
 	case "r", "R", "f":
 		kind := map[string]tb.DraftKind{"r": tb.Reply, "R": tb.ReplyAll, "f": tb.Forward}[s]
 		m = m.openDraft(tb.Draft{Kind: kind, ReplyTo: x.ID})
@@ -974,9 +1117,9 @@ func (m Model) keyMessageActions(s string, passthrough tea.Cmd) (tea.Model, tea.
 		})
 	case "U":
 		return m.startUnsubscribe(x)
-	case "s":
+	case "z":
 		return m.askAgent(fmt.Sprintf("Summarize message id %d. If it is part of a thread, read the thread first and summarize the whole conversation. Then list any action items for me.", x.ID))
-	case "w":
+	case "W":
 		m.replyTarget = x.ID
 		return m.startInput("reply", "what should the reply say? (short, e.g. \"yes, friday works\")", "")
 	}

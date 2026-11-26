@@ -245,6 +245,7 @@ type renderer struct {
 	pre     int
 	depth   int
 	stopped bool // StripQuotes reached the quoted part
+	imgAt   int  // index in out of the last block image's first row (-1: none)
 }
 
 // isQuote spots quoted reply history from Thunderbird, Gmail, Apple Mail and Outlook.
@@ -404,6 +405,151 @@ func (r *renderer) sub(n *html.Node, indent int) []string {
 	return strings.Split(tidy(s.finish()), "\n")
 }
 
+// cell renders a table cell as a block of lines at the given width (0: unlimited).
+func (r *renderer) cell(n *html.Node, width int) []string {
+	s := &renderer{o: r.o, num: r.num, pre: r.pre, depth: r.depth + 1}
+	s.o.Width = width
+	if width > 0 {
+		s.o.ImageWidth = width // images stay inside their column
+	}
+	if n.DataAtom == atom.Th {
+		s.sgr(sgrBold)
+	}
+	s.children(n)
+	r.stopped = r.stopped || s.stopped
+	return strings.Split(tidy(s.finish()), "\n")
+}
+
+func blockWidth(lines []string) int {
+	w := 0
+	for _, l := range lines {
+		w = max(w, ansi.StringWidth(l))
+	}
+	return w
+}
+
+func align(n *html.Node) string {
+	a := strings.ToLower(strings.TrimSpace(attr(n, "align")))
+	st := strings.ReplaceAll(strings.ToLower(attr(n, "style")), " ", "")
+	for _, v := range []string{"right", "center"} {
+		if a == v || strings.Contains(st, "text-align:"+v) {
+			return v
+		}
+	}
+	return ""
+}
+
+func hasImg(n *html.Node) bool {
+	if n.DataAtom == atom.Img {
+		return true
+	}
+	for c := n.FirstChild; c != nil; c = c.NextSibling {
+		if hasImg(c) {
+			return true
+		}
+	}
+	return false
+}
+
+const colGap, minCol = 2, 10
+
+// row lays a table row's cells out side by side, as the sender's layout does.
+// It reports false (and renders nothing) when the row should flow inline.
+// shortcut: columns are sized per row, so cells of different rows don't line up; colspan/rowspan ignored.
+func (r *renderer) row(n *html.Node) bool {
+	if r.depth >= maxDepth {
+		return false
+	}
+	var cells []*html.Node
+	for c := n.FirstChild; c != nil; c = c.NextSibling {
+		if c.Type == html.ElementNode && (c.DataAtom == atom.Td || c.DataAtom == atom.Th) && !hidden(c) &&
+			(textContent(c) != "" || hasImg(c)) {
+			cells = append(cells, c)
+		}
+	}
+	avail := r.o.Width - colGap*(len(cells)-1)
+	if len(cells) < 2 || r.o.Width > 0 && avail < minCol*len(cells) {
+		return false
+	}
+	// natural widths first; only cells that don't fit are rendered again
+	// shortcut: nested overflowing rows can re-render up to 2^maxDepth times; cache by (cell, width) if real mail gets slow.
+	blocks := make([][]string, len(cells))
+	widths := make([]int, len(cells))
+	total := 0
+	for i, c := range cells {
+		blocks[i] = r.cell(c, r.o.Width)
+		widths[i] = blockWidth(blocks[i])
+		total += widths[i]
+	}
+	if r.o.Width > 0 && total > avail {
+		alloc := make([]int, len(cells))
+		sum := 0
+		for i, w := range widths {
+			alloc[i] = max(minCol, w*avail/total)
+			sum += alloc[i]
+		}
+		for sum > avail { // minimums overshot: take from the widest
+			w := 0
+			for i := range alloc {
+				if alloc[i] > alloc[w] {
+					w = i
+				}
+			}
+			d := min(sum-avail, alloc[w]-minCol)
+			alloc[w] -= d
+			sum -= d
+		}
+		total = 0
+		for i, c := range cells {
+			if widths[i] > alloc[i] {
+				blocks[i] = r.cell(c, alloc[i])
+				widths[i] = blockWidth(blocks[i])
+			}
+			total += widths[i]
+		}
+	}
+	aligns := make([]string, len(cells))
+	for i, c := range cells {
+		aligns[i] = align(c)
+	}
+	if spare := avail - total; r.o.Width > 0 && spare > 0 {
+		for i := range cells { // push the first right-aligned cell to the right edge
+			if aligns[i] == "right" {
+				widths[i] += spare
+				break
+			}
+		}
+	}
+	rows := 0
+	for _, b := range blocks {
+		rows = max(rows, len(b))
+	}
+	r.flush()
+	for j := range rows {
+		var sb strings.Builder
+		for i, b := range blocks {
+			if i > 0 {
+				sb.WriteString(strings.Repeat(" ", colGap))
+			}
+			l := ""
+			if j < len(b) {
+				l = b[j]
+			}
+			pad := widths[i] - ansi.StringWidth(l)
+			left := 0
+			switch aligns[i] {
+			case "right":
+				left = pad
+			case "center":
+				left = pad / 2
+			}
+			sb.WriteString(strings.Repeat(" ", left) + l + strings.Repeat(" ", pad-left))
+		}
+		r.out = append(r.out, strings.TrimRight(sb.String(), " "))
+	}
+	return true
+}
+
 func attr(n *html.Node, key string) string {
 	for _, a := range n.Attr {
 		if a.Key == key {
@@ -556,7 +702,9 @@ func (r *renderer) walk(n *html.Node) {
 		}
 	case atom.Tr:
 		r.flush()
-		r.children(n)
+		if !r.row(n) {
+			r.children(n)
+		}
 		r.flush()
 	case atom.P, atom.Table, atom.Center:
 		r.blank()
@@ -610,10 +758,15 @@ func (r *renderer) img(n *html.Node) {
 			if len(lines) == 0 {
 				return
 			}
-			r.flush()
 			if token != "" {
 				lines[0] = fmt.Sprintf("%s%s;%d;%d%s", markerPrefix, token, ansi.StringWidth(lines[0]), len(lines), markerEnd) + lines[0]
 			}
+			if len(lines) == 1 { // icon-sized: flows with the text
+				r.write(lines[0])
+				return
+			}
+			r.flush()
+			r.imgAt = len(r.out)
 			r.out = append(r.out, lines...)
 			return
 		}
@@ -625,6 +778,7 @@ func (r *renderer) img(n *html.Node) {
 
 func (r *renderer) link(n *html.Node) {
 	href := strings.TrimSpace(attr(n, "href"))
+	r.imgAt = -1
 	r.sgr(sgrUnder)
 	r.children(n)
 	r.sgr(sgrUnderOff)
@@ -633,9 +787,17 @@ func (r *renderer) link(n *html.Node) {
 	if !r.o.Links || idx == 0 {
 		return
 	}
-	r.sgr(sgrDim)
-	r.write(fmt.Sprintf("[%d]", idx))
-	r.sgr(sgrDimOff)
+	tag := fmt.Sprintf("[%d]", idx)
+	if r.o.Styled {
+		tag = sgrDim + tag + sgrDimOff
+	}
+	// an image-only link: put the number beside the image's first row, not under it
+	if i := r.imgAt; label == "" && i >= 0 && strings.TrimSpace(ansi.Strip(r.line.String())) == "" &&
+		(r.o.Width <= 0 || ansi.StringWidth(r.out[i])+1+ansi.StringWidth(tag) <= r.o.Width) {
+		r.out[i] += " " + tag
+		return
+	}
+	r.write(tag)
 }
 
 func (r *renderer) list(n *html.Node) {

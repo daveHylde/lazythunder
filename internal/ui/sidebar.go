@@ -125,28 +125,9 @@ func (m Model) sidebarLines(w, h int) ([]string, *sixelReq) {
 		return out
 	}
 
-	// summary + action items
+	// action items (the summary itself sits at the top of the message)
 	var top []string
-	sum, state, errText := m.sum.get(x.HeaderMessageID)
-	if m.ag.Enabled() {
-		top = append(top, section("✦ Summary"))
-	}
-	switch {
-	case !m.ag.Enabled():
-	case state == sumDone:
-		top = append(top, wrapDim(sum.Summary, "")...)
-	case state == sumRunning:
-		top = append(top, dim.Render("summarizing…"))
-	case state == sumQueued:
-		top = append(top, dim.Render("queued for a summary"))
-	case state == sumFailed:
-		top = append(top, errSt.Render(ansi.Truncate("AI unavailable: "+oneLine(errText), w, "…")))
-	default:
-		top = append(top, dim.Render("rest on the message for a summary"))
-	}
-	if len(top) > 0 {
-		top = append(top, "")
-	}
+	sum, _, _ := m.sum.get(x.HeaderMessageID)
 
 	// To do: action items (with the link that does them), then the other safe links
 	info := linkInfos(sum)
@@ -223,7 +204,7 @@ func (m Model) sidebarLines(w, h int) ([]string, *sixelReq) {
 		mid = append(mid, "")
 	}
 
-	// too tall: give up links first, then the end of the summary; keep attachments
+	// too tall: give up links first, then the end of the action items; keep attachments
 	if over := len(top) + len(mid) + len(bottom) - h; over > 0 {
 		mid = mid[:max(0, len(mid)-over)]
 		if over = len(top) + len(mid) + len(bottom) - h; over > 0 {

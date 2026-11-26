@@ -214,3 +214,85 @@ func TestTextLinkParensAndQuoteCut(t *testing.T) {
 		t.Fatalf("outlook quote kept: %q", out)
 	}
 }
+
+// tokImg returns an Opts.Image serving a w×h px image per src, tokened by src.
+func tokImg(sizes map[string][2]int) func(string) (image.Image, string) {
+	return func(src string) (image.Image, string) {
+		s, ok := sizes[src]
+		if !ok {
+			return nil, ""
+		}
+		return image.NewRGBA(image.Rect(0, 0, s[0], s[1])), src
+	}
+}
+
+func TestImageCellsSideBySide(t *testing.T) {
+	o := Opts{Width: 60, Links: true, BlankImages: true, CellW: 6, CellH: 12,
+		Image: tokImg(map[string][2]int{"logo": {120, 36}, "search": {24, 24}})}
+	src := `<p>Top</p><table><tr><td><a href="https://shop.no"><img src="logo"></a></td>
+		<td align="right"><a href="https://shop.no/s"><img src="search"></a></td></tr></table><p>after</p>`
+	got, ps := Placements(HTML(src, o))
+	lines := strings.Split(got, "\n")
+	// logo: 20×3 cells at col 0; search: 4×2 cells pushed to the right edge, labels beside first rows
+	want := []Placement{{Token: "logo", Line: 2, Col: 0, Cols: 20, Rows: 3}, {Token: "search", Line: 2, Col: 52, Cols: 4, Rows: 2}}
+	if len(ps) != 2 || ps[0] != want[0] || ps[1] != want[1] {
+		t.Fatalf("placements %+v, want %+v\n%s", ps, want, got)
+	}
+	if !strings.HasSuffix(lines[2], "\u2800 [2]") || !strings.Contains(lines[2], "\u2800 [1]") ||
+		ansi.StringWidth(lines[2]) != 60 || lines[5] != "" || lines[6] != "after" {
+		t.Fatalf("got %q", lines)
+	}
+}
+
+func TestTextCellsShareWidth(t *testing.T) {
+	got := plain(`<table><tr><td>`+strings.Repeat("left words ", 6)+`</td><td>`+strings.Repeat("right side ", 12)+`</td></tr></table>`, 40)
+	lines := strings.Split(got, "\n")
+	if len(lines) < 3 || !strings.HasPrefix(lines[0], "left words") || !strings.Contains(lines[0], "  right side") {
+		t.Fatalf("got %q", lines)
+	}
+	for _, l := range lines {
+		if ansi.StringWidth(l) > 40 {
+			t.Fatalf("line too wide (%d): %q", ansi.StringWidth(l), l)
+		}
+	}
+}
+
+func TestInlineIconImage(t *testing.T) {
+	o := Opts{Width: 20, Links: true, BlankImages: true, CellW: 6, CellH: 12,
+		Image: tokImg(map[string][2]int{"star": {12, 12}})}
+	got, ps := Placements(HTML(`<p>one two three four <img src="star"> rated <a href="https://x.no"><img src="star"></a></p>`, o))
+	lines := strings.Split(got, "\n")
+	want := []Placement{{Token: "star", Line: 1, Col: 0, Cols: 2, Rows: 1}, {Token: "star", Line: 1, Col: 9, Cols: 2, Rows: 1}}
+	if len(ps) != 2 || ps[0] != want[0] || ps[1] != want[1] || len(lines) != 2 ||
+		lines[1] != "\u2800\u2800 rated \u2800\u2800[1]" {
+		t.Fatalf("placements %+v\n%q", ps, lines)
+	}
+}
+
+func TestLinkedBlockImageLabelBeside(t *testing.T) {
+	o := Opts{Width: 40, Links: true, BlankImages: true, CellW: 6, CellH: 12,
+		Image: tokImg(map[string][2]int{"banner": {60, 36}})}
+	got, ps := Placements(HTML(`<p>Hi <a href="https://x.no"><img src="banner"></a></p>`, o))
+	lines := strings.Split(got, "\n")
+	if len(ps) != 1 || ps[0].Line != 1 || ps[0].Col != 0 || len(lines) != 4 || lines[0] != "Hi" ||
+		lines[1] != strings.Repeat("\u2800", 10)+" [1]" || lines[3] != strings.Repeat("\u2800", 10) {
+		t.Fatalf("placements %+v\n%q", ps, lines)
+	}
+}
+
+func TestNestedCellsStayCheap(t *testing.T) {
+	src := strings.Repeat("some words here ", 2000)
+	for range 30 { // each level: a 2-cell row whose wide first cell holds the level below
+		src = "<table><tr><td>" + src + "</td><td>side text here</td></tr></table>"
+	}
+	start := time.Now()
+	got := plain(src, 120)
+	if d := time.Since(start); d > 3*time.Second {
+		t.Fatalf("took %v", d)
+	}
+	for _, l := range strings.Split(got, "\n") {
+		if ansi.StringWidth(l) > 120 {
+			t.Fatalf("line too wide (%d)", ansi.StringWidth(l))
+		}
+	}
+}

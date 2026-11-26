@@ -466,6 +466,11 @@ func (c *Client) Mark(ctx context.Context, ids []int, flag string) error {
 	return c.Run(ctx, nil, "mark", joinIDs(ids), "--"+flag)
 }
 
+// MarkFolderRead marks every message in a folder as read.
+func (c *Client) MarkFolderRead(ctx context.Context, folderID string) error {
+	return c.Run(ctx, nil, "bulk", "mark-read", folderID)
+}
+
 func (c *Client) Move(ctx context.Context, ids []int, folderID string) error {
 	return c.Run(ctx, nil, "move", joinIDs(ids), folderID)
 }

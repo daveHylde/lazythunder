@@ -19,20 +19,20 @@ gives you a fast, keyboard-only way to get through it all.
 │★  Nov 24 Posten          me@gmail.com   Pakken din er klar til henting                       │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────╯
 ╭[2] Faktura 2026-118 forfaller fredag─────────────────────────────────────────────────────────╮
-│From: Fiken <noreply@fiken.no>                       │ ✦ Summary ─────────────────────────────│
-│Date: Wed 2026-11-25 09:14                           │ Invoice of 4 200 kr is due on Friday.  │
-│📎 faktura-118.pdf (84 KB)                           │                                        │
-│──────────────────────────────────────────────────── │ To do · o+n opens ─────────────────────│
-│Hei!                                                 │ ☐ Pay the invoice by Friday [1]        │
-│                                                     │   fiken.no/betal/2026-118              │
-│Fakturaen under forfaller fredag.                    │ [2] View invoice online                │
-│                                                     │   fiken.no/faktura/2026-118            │
-│Betal nå[1] · Se faktura[2]                          │                                        │
+│From: Fiken <noreply@fiken.no>                       │ To do · o+n opens ─────────────────────│
+│Date: Wed 2026-11-25 09:14                           │ ☐ Pay the invoice by Friday [1]        │
+│📎 faktura-118.pdf (84 KB)                           │   fiken.no/betal/2026-118              │
+│✦ Invoice of 4 200 kr is due on Friday.              │ [2] View invoice online                │
+│──────────────────────────────────────────────────── │   fiken.no/faktura/2026-118            │
+│Hei!                                                 │                                        │
 │                                                     │ Attachments (1) · A ───────────────────│
-│                                                     │ 📎 faktura-118.pdf 84 KB               │
+│Fakturaen under forfaller fredag.                    │ 📎 faktura-118.pdf 84 KB               │
 │                                                     │ FAKTURA 2026-118  Beløp: 4 200,00      │
+│Betal nå[1] · Se faktura[2]                          │                                        │
+│                                                     │                                        │
+│                                                     │                                        │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────╯
- 12 messages        l folders · r reply · o links · A attachments · e archive · a agent · ? help
+ 12 messages   l folders · r reply · space select · a archive · d delete · : agent · ? help
 ```
 
 ## Why you'll like it
@@ -41,21 +41,22 @@ gives you a fast, keyboard-only way to get through it all.
   jump straight to an account, and each tab shows its unread count.
 - **Fast search.** `/` searches sender and subject across every account and all time in a few
   seconds, ignoring case, then merges in matches from the message text. Newest first.
-- **Real HTML in your terminal.** Bold, italics, headings, lists and quotes. Layout tables are
-  flattened, hidden preview text is dropped, and remote and embedded images show up inline: sharp
+- **Real HTML in your terminal.** Bold, italics, headings, lists and quotes. Layout tables keep their
+  columns side by side, small icons sit inline with the text, hidden preview text is dropped, and remote and embedded images show up inline: sharp
   with sixel or kitty graphics, and as half-blocks in any other terminal. `i` opens them full
   screen.
-- **A sidebar that tells you what matters.** A one-line AI summary, then a **To do** list: action
+- **A summary and a sidebar that tell you what matters.** A one-line AI summary under the
+  headers, and a sidebar **To do** list: action
   items tied to the link that does them, followed by every other safe link with a short title of
   what it opens. Type `o` and the number to open one.
 - **Unsubscribe with one key, no browser.** `U` uses one-click unsubscribe when the sender supports
   it, sends the unsubscribe email when that's the method, or lets the assistant read the web page
   and fill in the form for you. Then the message goes to the trash.
-- **An assistant that works your mail.** `a` and ask: "what did Kari say about the workshop?",
+- **An assistant that works your mail.** `:` and ask: "what did Kari say about the workshop?",
   "find the train tickets from October", "archive all GitHub notifications from last week". It
   searches, reads and acts across every account. It asks y/n before changing anything and never
   sends on its own.
-- **Replies in your own style.** `w`, type "yes, Friday works", and get a full reply in the email's
+- **Replies in your own style.** `W`, type "yes, Friday works", and get a full reply in the email's
   language, written to your own reply guide. You review it, edit it in `$EDITOR`, and send.
 - **Safe by default.**
   - Risky attachments (`invoice.pdf.exe`, macro Office files, scripts, archives) are flagged ⚠
@@ -112,8 +113,8 @@ lazythunder runs on Linux. Links and files open through `xdg-open`.
 
 ## AI setup
 
-AI is optional. It powers summaries, To do items, link titles, the assistant (`a`, `s`), AI
-replies (`w`), suspicious-link detection, and unsubscribing through web pages. The endpoint must
+AI is optional. It powers summaries, To do items, link titles, the assistant (`:`, `z`), AI
+replies (`W`), suspicious-link detection, and unsubscribing through web pages. The endpoint must
 support OpenAI-style chat completions with tool calling and JSON-schema output.
 
 ```sh
@@ -146,14 +147,15 @@ Press `?` in the app for the full list.
 | | |
 |---|---|
 | **Tabs** | `alt+1` all inboxes · `alt+2…9` accounts · `[` `]` previous/next |
-| **Move** | `j` `k` `g` `G` · `tab` or `1` `2` switch pane · `enter` read · `l` folders · `b` sidebar |
+| **Move** | `j` `k` `g` `G` · `tab` or `1` `2` switch pane · `enter` read · `n` `p` next/previous unread · `l` folders · `v` sidebar |
 | **Scroll** | `pgup` `pgdown` always scroll the message · `space` pages · `ctrl+d` `ctrl+u` |
-| **Find** | `/` search · `u` unread only · `esc` back from search · `ctrl+r` refresh |
-| **Mail** | `r` reply · `R` reply all · `f` forward · `c` compose · `e` archive · `d` trash · `M` move · `m` read/unread · `F` flag |
+| **Find** | `/` search · `u` unread only · `esc` back from search · `F5` refresh |
+| **Mail** | `r` reply · `R` reply all · `f` forward · `c` compose · `a` archive · `d`/`Del` trash · `M` move · `m` read/unread · `S` star · `C` mark folder read |
+| **Select** | `space` select in the list · `m` `S` `a` `d` `M` act on all selected · `esc` clears |
 | **Links** | `o` link list · `o3` opens link [3] · `y` copy |
 | **Attachments** | `A` list · `enter` preview · `d` save to ~/Downloads · `o` open · `i` images full screen |
 | **Clean up** | `U` unsubscribe and trash |
-| **AI** | `a` ask · `s` summarize message or thread · `w` write a reply · `ctrl+l` new chat · `esc` cancel |
+| **AI** | `:` ask · `z` summarize message or thread · `W` write a reply · `X` new chat · `esc` cancel / back to the email |
 | **Drafts** | `e` edit in `$EDITOR` · `enter` save to Drafts · `S` send · `x` discard |
 
 Resting on a message for a second marks it read and moves its summary to the front of the queue.
