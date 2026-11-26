@@ -32,7 +32,7 @@ gives you a fast, keyboard-only way to get through it all.
 │                                                     │                                        │
 │                                                     │                                        │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────╯
- 12 messages   l folders · r reply · space select · a archive · d delete · : agent · ? help
+ 12 messages   l folders · r reply · space select · a archive · d delete · : assistant · ? help
 ```
 
 ## Why you'll like it
@@ -59,10 +59,12 @@ gives you a fast, keyboard-only way to get through it all.
 - **Unsubscribe with one key, no browser.** `U` uses one-click unsubscribe when the sender supports
   it, sends the unsubscribe email when that's the method, or lets the assistant read the web page
   and fill in the form for you. Then the message goes to the trash.
-- **An assistant that works your mail.** `:` and ask: "what did Kari say about the workshop?",
-  "find the train tickets from October", "archive all GitHub notifications from last week". It
-  searches, reads and acts across every account. It asks y/n before changing anything and never
-  sends on its own.
+- **An assistant that works your mail.** `:` (or `alt+0`) opens the Assistant screen. Ask:
+  "what did Kari say about the workshop?", "find the train tickets from October", "archive all
+  GitHub notifications from last week". It searches, reads and acts across every account, and
+  the messages it found line up on the right: `tab` there and `enter` opens one, `esc` brings
+  you back. It asks y/n before changing anything and never sends on its own. `z` on a message
+  asks it for a summary of the whole thread. The conversation stays until `ctrl+n`.
 - **Write mail by talking to it.** `r`, `R`, `f` or `c` opens compose mode: the draft on the
   left, an assistant for that draft on the right. Type "yes, Friday works" and get a full reply in
   the email's language, written to your own reply guide. Then "shorter", "more formal" or "in
@@ -151,7 +153,7 @@ Press `?` in the app for the full list.
 
 | | |
 |---|---|
-| **Tabs** | `alt+1` all inboxes · `alt+2…9` accounts · `[` `]` previous/next |
+| **Tabs** | `alt+1` all inboxes · `alt+2…9` accounts · `[` `]` previous/next · `alt+0` the Assistant |
 | **Move** | `j` `k` `g` `G` · `tab` or `1` `2` switch pane · `enter` read · `n` `p` next/previous unread · `l` folders · `v` sidebar |
 | **Scroll** | `pgup` `pgdown` always scroll the message · `space` pages · `ctrl+d` `ctrl+u` |
 | **Find** | `/` search · `u` unread only · `esc` back from search · `F5` refresh · `T` open the Thunderbird window |
@@ -162,7 +164,7 @@ Press `?` in the app for the full list.
 | **Thread** | `t` thread list · `t2` opens message 2 of the thread (in the list, or the whole thread as a list; `esc` back) |
 | **Attachments** | `A` list · `enter` preview · `d` save to ~/Downloads · `o` open · `i` images full screen |
 | **Clean up** | `U` unsubscribe and trash |
-| **AI** | `:` ask · `z` summarize message or thread · `X` new chat · `esc` cancel / back to the email |
+| **Assistant** | `:` or `alt+0` open · `enter` ask · `tab` Found list (`j` `k`, `enter` opens the message, `esc` there comes back) · `ctrl+n` new conversation · `pgup` `pgdown` scroll · `esc` cancel a running request, else back to your mail · `z` on a message: summarize it and its thread in the Assistant |
 | **Compose** | type what to say + `enter` writes the draft, then each message revises it · `ctrl+z` undo · `ctrl+e` edit in `$EDITOR` · `pgup` `pgdown` scroll the draft · `ctrl+s` send (y/n) · `ctrl+d` save to Drafts · `esc` close (save / discard / keep writing) · AI off: `e` editor, `u` undo |
 | **Accounts** | `ctrl+a` accounts screen · `a` add · `e` edit servers or identity · `D` remove (local copy only, server untouched) · `i` add identity · `x` delete identity · `*` default identity |
 

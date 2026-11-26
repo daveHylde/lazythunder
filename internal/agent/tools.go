@@ -108,9 +108,15 @@ func (a *Agent) dispatch(ctx context.Context, name string, p args, h Hooks) (str
 			return "", fmt.Errorf("ids is empty")
 		}
 	}
+	found := func(ms []tb.Message) {
+		if h.Found != nil && len(ms) > 0 {
+			h.Found(ms)
+		}
+	}
 	switch name {
 	case "search":
 		pg, err := c.Search(ctx, p.Query, tb.SearchOpts{From: p.From, Folder: p.FolderID, Since: p.Since, Unread: p.UnreadOnly, Limit: limit})
+		found(pg.Messages)
 		return FormatList(pg.Messages), err
 	case "list_folders":
 		fs, err := c.Folders(ctx)
@@ -123,15 +129,19 @@ func (a *Agent) dispatch(ctx context.Context, name string, p args, h Hooks) (str
 		return b.String(), err
 	case "list_messages":
 		ms, _, _, err := c.Recent(ctx, p.FolderID, time.Time{}, p.UnreadOnly)
-		return FormatList(ms[:min(limit, len(ms))]), err
+		ms = ms[:min(limit, len(ms))]
+		found(ms)
+		return FormatList(ms), err
 	case "read_message":
 		m, err := c.Read(ctx, p.ID)
 		if err != nil {
 			return "", err
 		}
+		found([]tb.Message{m.Message})
 		return FormatFull(m), nil
 	case "get_thread":
 		t, err := c.Thread(ctx, p.ID)
+		found(t)
 		return FormatList(t), err
 	case "mark":
 		switch p.Flag {

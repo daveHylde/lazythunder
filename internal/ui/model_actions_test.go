@@ -197,7 +197,7 @@ func TestKeysNeedingOpenMessage(t *testing.T) {
 func TestAIOffKeys(t *testing.T) {
 	for _, k := range []string{":", "z"} {
 		m := press(t, loaded(t, nil), k) // nil agent: AI off
-		if m.status != "AI is off (LAZYTHUNDER_LLM_URL=off)" || m.mode != mNormal || m.agentBusy {
+		if m.status != "AI is off (LAZYTHUNDER_LLM_URL=off)" || m.mode != mNormal || m.asst.busy {
 			t.Errorf("%s: status %q mode %d", k, m.status, m.mode)
 		}
 	}

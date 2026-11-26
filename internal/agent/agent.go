@@ -35,7 +35,9 @@ type ToolCall struct {
 type Hooks struct {
 	Confirm func(action string) bool // ask the user before a mutating action
 	Propose func(tb.Draft)           // hand a draft to the user's compose flow
-	Status  func(string)             // progress line, e.g. "searching…"
+	Status  func(string)             // progress state, e.g. "thinking…"
+	Step    func(string)             // optional: a round of tool calls, e.g. "reading 3 messages"
+	Found   func([]tb.Message)       // optional: messages a tool returned (search, list, thread, read)
 }
 
 // Agent talks to any OpenAI-compatible chat completions endpoint.
@@ -158,17 +160,72 @@ func (a *Agent) Ask(ctx context.Context, user, viewCtx string, h Hooks) (string,
 		if err != nil {
 			return "", err
 		}
+		reply.Content = noThoughts(reply.Content) // leaked reasoning stays out of the answer and the history
 		a.History = append(a.History, reply)
 		if len(reply.ToolCalls) == 0 {
-			return strings.TrimSpace(reply.Content), nil
+			return reply.Content, nil
+		}
+		if h.Step != nil {
+			for _, s := range steps(reply.ToolCalls) {
+				h.Step(s)
+			}
 		}
 		for _, tc := range reply.ToolCalls {
-			h.Status(tc.Function.Name + " " + tc.Function.Arguments)
 			out := a.call(ctx, tc.Function.Name, tc.Function.Arguments, h)
 			a.History = append(a.History, Msg{Role: "tool", ToolCallID: tc.ID, Content: clip(out, 8000)})
 		}
 	}
 	return "", fmt.Errorf("agent gave up after 10 tool rounds")
+}
+
+// steps describes a round of tool calls in a few words each, one line per
+// tool, e.g. `searching "invoice"…` or "reading 3 messages".
+func steps(calls []ToolCall) []string {
+	var order []string
+	n, query := map[string]int{}, ""
+	for _, tc := range calls {
+		name := tc.Function.Name
+		if n[name] == 0 {
+			order = append(order, name)
+		}
+		n[name]++
+		if name == "search" && query == "" {
+			var p args
+			json.Unmarshal([]byte(tc.Function.Arguments), &p)
+			query = p.Query
+		}
+	}
+	plural := func(k int, one, many string) string {
+		if k == 1 {
+			return one
+		}
+		return fmt.Sprintf(many, k)
+	}
+	var out []string
+	for _, name := range order {
+		k := n[name]
+		switch name {
+		case "search":
+			one := "searching…"
+			if query != "" {
+				one = fmt.Sprintf("searching %q…", query)
+			}
+			out = append(out, plural(k, one, "running %d searches…"))
+		case "read_message":
+			out = append(out, plural(k, "reading a message", "reading %d messages"))
+		case "get_thread":
+			out = append(out, plural(k, "reading the thread", "reading %d threads"))
+		case "list_messages":
+			out = append(out, plural(k, "listing a folder", "listing %d folders"))
+		case "list_folders":
+			out = append(out, "looking at your folders")
+		case "propose_draft":
+			out = append(out, "writing a draft")
+		default: // mutating tools: the y/n question says what
+			out = append(out, name+"…")
+		}
+	}
+	return out
 }
 
 // trim drops the oldest turns so the prompt stays well under the 32k context.
@@ -200,4 +257,18 @@ func clip(s string, n int) string {
 		return s
 	}
 	return strings.ToValidUTF8(s[:n], "") + "\n…[truncated]"
+}
+
+// noThoughts drops model reasoning that leaked into a field, e.g.
+// "<think>…</think>", "<|channel|>analysis…<|message|>" or "<|channel>thought…<channel|>".
+func noThoughts(s string) string {
+	if i := strings.LastIndex(s, "</think>"); i >= 0 {
+		s = s[i+len("</think>"):]
+	}
+	if i := strings.LastIndex(s, "|>"); i >= 0 {
+		s = s[i+2:]
+	} else if t := strings.TrimSpace(s); strings.HasPrefix(t, "<|") || strings.HasPrefix(t, "<think>") {
+		return "" // reasoning that never ended: nothing usable
+	}
+	return strings.TrimSpace(s)
 }

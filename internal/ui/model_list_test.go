@@ -319,8 +319,8 @@ func TestHelpScreen(t *testing.T) {
 func search(t *testing.T, m Model, q string) Model {
 	t.Helper()
 	m = press(t, m, "/")
-	if m.mode != mInput || m.inputFor != "search" {
-		t.Fatalf("/ mode %d for %q", m.mode, m.inputFor)
+	if m.mode != mInput {
+		t.Fatalf("/ mode %d", m.mode)
 	}
 	m, _ = update(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(q)})
 	return press(t, m, "enter")

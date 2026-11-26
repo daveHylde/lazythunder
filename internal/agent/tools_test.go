@@ -349,13 +349,16 @@ func TestAskReadsThroughHubAndKeepsHistory(t *testing.T) {
 	})
 	a := &Agent{URL: srv.URL, TB: c, HTTP: srv.Client()}
 	var status []string
-	h := Hooks{Confirm: func(string) bool { return false }, Propose: func(tb.Draft) {}, Status: func(s string) { status = append(status, s) }}
+	var found []int
+	h := Hooks{Confirm: func(string) bool { return false }, Propose: func(tb.Draft) {}, Status: func(string) {},
+		Step:  func(s string) { status = append(status, s) },
+		Found: func(ms []tb.Message) { found = append(found, ms[0].ID) }}
 	text, err := a.Ask(context.Background(), "what is 7?", "Inbox", h)
 	if err != nil || text != "It is big." {
 		t.Fatalf("got %q, %v", text, err)
 	}
-	if !strings.Contains(strings.Join(status, "\n"), `read_message {"id":7}`) {
-		t.Errorf("status lines %q", status)
+	if strings.Join(status, "\n") != "reading a message" || len(found) != 1 || found[0] != 7 {
+		t.Errorf("step lines %q found %v", status, found)
 	}
 	r := reqs()
 	if len(r) != 2 || r[0]["tools"] == nil {

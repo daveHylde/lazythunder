@@ -112,17 +112,3 @@ func (a *Agent) ReviseDraft(ctx context.Context, d tb.Draft, original string, hi
 	}
 	return r, err
 }
-
-// noThoughts drops model reasoning that leaked into a field, e.g.
-// "<think>…</think>", "<|channel|>analysis…<|message|>" or "<|channel>thought…<channel|>".
-func noThoughts(s string) string {
-	if i := strings.LastIndex(s, "</think>"); i >= 0 {
-		s = s[i+len("</think>"):]
-	}
-	if i := strings.LastIndex(s, "|>"); i >= 0 {
-		s = s[i+2:]
-	} else if t := strings.TrimSpace(s); strings.HasPrefix(t, "<|") || strings.HasPrefix(t, "<think>") {
-		return "" // reasoning that never ended: nothing usable
-	}
-	return strings.TrimSpace(s)
-}

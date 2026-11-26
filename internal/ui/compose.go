@@ -249,9 +249,10 @@ func (m Model) undoRevision() (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// composeLayout puts the draft and its agent side by side when the terminal
-// is wide enough, else the draft on top and the agent below.
-func (m Model) composeLayout() (side bool, dw, dh, aw, ah int) {
+// splitLayout sizes the two-column screens (compose: draft + agent;
+// Assistant: conversation + Found): side by side when the terminal is wide
+// enough, else the main panel on top and the side panel below.
+func (m Model) splitLayout() (side bool, dw, dh, aw, ah int) {
 	h := m.h - 2 // tab bar and status line
 	if m.w >= 90 {
 		aw = min(60, m.w*2/5)
@@ -262,12 +263,12 @@ func (m Model) composeLayout() (side bool, dw, dh, aw, ah int) {
 }
 
 func (m Model) draftMaxTop() int {
-	_, dw, dh, _, _ := m.composeLayout()
+	_, dw, dh, _, _ := m.splitLayout()
 	return max(0, len(m.draftLines(dw-2))-(dh-3))
 }
 
 func (m Model) viewCompose() string {
-	side, dw, dh, aw, ah := m.composeLayout()
+	side, dw, dh, aw, ah := m.splitLayout()
 	title := "[2] " + kindName(m.draft.Kind)
 	if v := m.version(); v > 0 {
 		title += fmt.Sprintf(" · v%d", v)

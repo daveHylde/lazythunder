@@ -35,13 +35,14 @@ const (
 type mode int
 
 const (
-	mNormal   mode = iota
-	mInput         // text input at the bottom (search or agent prompt)
-	mConfirm       // y/n question
-	mDraft         // compose mode: the draft and its agent column
-	mPicker        // link or attachment picker in the detail pane
-	mAttView       // previewing an attachment in the detail pane
-	mAccounts      // the accounts screen (ctrl+a)
+	mNormal    mode = iota
+	mInput          // search input at the bottom
+	mConfirm        // y/n question
+	mDraft          // compose mode: the draft and its agent column
+	mPicker         // link or attachment picker in the detail pane
+	mAttView        // previewing an attachment in the detail pane
+	mAccounts       // the accounts screen (ctrl+a)
+	mAssistant      // the Assistant screen (: or alt+0)
 	mHelp
 )
 
@@ -49,6 +50,9 @@ const pageSize = 100
 
 // prog lets background goroutines (the agent) talk to the UI.
 var prog *tea.Program
+
+// sendMsg delivers a message from a background goroutine; tests replace it.
+var sendMsg = func(msg tea.Msg) { prog.Send(msg) }
 
 // tbReady lets our background worker start once Thunderbird answers.
 var tbReady atomic.Bool
@@ -116,15 +120,10 @@ type Model struct {
 	attTitle   string
 	previewSeq int
 
-	showAgent  bool
-	chat       []string
-	agentVP    viewport.Model
-	agentBusy  bool
-	agentState string
-	agentStop  context.CancelFunc
+	asst       assistant // the Assistant screen: its conversation and what it found
+	backToAsst bool      // the open message came from the Assistant's Found list: esc returns there
 
-	input      textinput.Model
-	inputFor   string // "search" or "agent"
+	input      textinput.Model // search
 	confirm    *confirmation
 	draft      *tb.Draft
 	draftCtx   string
@@ -150,8 +149,9 @@ type listView struct {
 	accountID string   // "" when merged across accounts
 	query     string
 	thread    []tb.ThreadItem // a conversation opened from the thread box
-	focus     string          // thread: Message-ID to put the cursor on once listed
-	back      *listView       // thread: the view it was opened from (esc returns there)
+	found     []tb.Message    // the Assistant's Found messages, opened from its list
+	focus     string          // thread, found: Message-ID to put the cursor on once listed
+	back      *listView       // thread, found: the view it was opened from (esc returns there)
 }
 
 type confirmation struct {
@@ -194,15 +194,6 @@ type (
 		remove []int // drop these ids from the list
 		reload bool  // reload the list (folder-wide changes)
 	}
-	agentReplyMsg struct {
-		text string
-		err  error
-	}
-	agentStatusMsg string
-	confirmMsg     struct {
-		text  string
-		reply chan bool
-	}
 	draftMsg  struct{ d tb.Draft }
 	editedMsg struct {
 		path string
@@ -219,7 +210,7 @@ func Run(c *tb.Client, ag *agent.Agent) error {
 	ti := textinput.New()
 	ti.Prompt = "> "
 	m := Model{c: c, ag: ag, ctx: context.Background(), input: ti, accounts: map[string]tb.Account{},
-		preview: newViewport(), agentVP: newViewport(), attVP: newViewport(), status: "connecting to Thunderbird…",
+		preview: newViewport(), attVP: newViewport(), status: "connecting to Thunderbird…",
 		images: newImageStore(), replied: map[int]store.Reply{}, sidebar: true}
 	defer m.images.close()
 	if st, err := openStore(); st == nil {
@@ -243,7 +234,7 @@ func Run(c *tb.Client, ag *agent.Agent) error {
 	}
 	prog = tea.NewProgram(m, tea.WithAltScreen())
 	final, err := prog.Run()
-	if fm, ok := final.(Model); ok && fm.agentBusy {
+	if fm, ok := final.(Model); ok && fm.asst.busy {
 		fm.setPause(false) // quit mid-chat: free the workers now, not in 10 minutes
 	}
 	os.Stdout.WriteString(autowrapOn)
@@ -308,6 +299,10 @@ func (m *Model) loadList(appendPage bool) tea.Cmd {
 		m.msgs, m.mcur = nil, 0
 		return m.loadThreadList(seq)
 	}
+	if found := m.view.found; found != nil { // already loaded: the Assistant's messages
+		m.msgs, m.mcur = nil, 0
+		return func() tea.Msg { return listMsg{seq: seq, msgs: found} }
+	}
 	if m.view.folderIDs == nil {
 		q := m.view.query
 		m.msgs, m.mcur = nil, 0
@@ -362,6 +357,9 @@ func (m Model) selected() (tb.Message, bool) {
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if mm, cmd, ok := m.acctUpdate(msg); ok {
+		return mm, cmd
+	}
+	if mm, cmd, ok := m.asstUpdate(msg); ok {
 		return mm, cmd
 	}
 	switch msg := msg.(type) {
@@ -666,25 +664,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Batch(m.schedulePreview(), m.loadFolders())
 		}
 		return m, m.loadFolders()
-	case agentStatusMsg:
-		m.agentState = string(msg)
-		return m, nil
-	case agentReplyMsg:
-		m.agentBusy, m.agentState = false, ""
-		m.setPause(false)
-		if m.confirm != nil && m.confirm.reply != nil { // agent ended (e.g. cancelled) while asking
-			m.confirm, m.mode = nil, m.modeAfterConfirm()
-		}
-		if msg.err != nil {
-			m.say("error: " + msg.err.Error())
-		} else {
-			m.say(m.model() + ": " + msg.text)
-		}
-		return m, nil
-	case confirmMsg:
-		m.confirm = &confirmation{text: msg.text, reply: msg.reply}
-		m.mode = mConfirm
-		return m, nil
 	case draftMsg:
 		d := msg.d
 		if m.draft != nil {
@@ -766,12 +745,6 @@ func (m *Model) refreshPreview(top bool) tea.Cmd {
 // their cell size). LAZYTHUNDER_GRAPHICS=blocks turns it off.
 func (m Model) inlineSixel() bool {
 	return termimg.Protocol() == "sixel" && m.cellW > 0 && m.cellH > 0
-}
-
-func (m *Model) say(line string) {
-	m.chat = append(m.chat, line)
-	m.agentVP.SetContent(m.renderChat())
-	m.agentVP.GotoBottom()
 }
 
 // foldersOf lists an account's folders; "" lists every account's inbox.
@@ -876,7 +849,7 @@ func (m Model) searchResults(msg listMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) show(v listView) (tea.Model, tea.Cmd) {
-	m.view, m.msgs, m.mcur, m.marked = v, nil, 0, nil
+	m.view, m.msgs, m.mcur, m.marked, m.backToAsst = v, nil, 0, nil, false
 	m.viewGen++
 	if m.cancelView != nil {
 		m.cancelView() // stop reply-status lookups for the old view
@@ -906,6 +879,8 @@ func (m Model) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.keyPicker(s)
 	case mAccounts:
 		return m.keyAccounts(k)
+	case mAssistant:
+		return m.keyAssistant(k)
 	case mAttView:
 		switch s {
 		case "esc", "q", "h", "left":
@@ -961,19 +936,9 @@ func (m Model) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		n := len(m.acctOrder) + 1
 		return m.openTab((m.tab + map[string]int{"[": n - 1, "]": 1}[s]) % n)
 	case "/":
-		return m.startInput("search", "search all accounts", "")
-	case ":":
-		m.showAgent, m.focus = true, pDetail
-		return m.startInput("agent", "ask "+m.model(), "")
-	case "X":
-		if m.agentBusy {
-			m.status = m.model() + " is busy (esc to cancel)"
-			return m, nil
-		}
-		m.ag.Reset()
-		m.chat = nil
-		m.say("(new conversation)")
-		return m, nil
+		return m.startSearch()
+	case ":", "alt+0":
+		return m.openAssistant()
 	case "c":
 		return m.startCompose(tb.Draft{Kind: tb.NewMail, From: m.defaultIdentity()})
 	case "u":
@@ -994,17 +959,12 @@ func (m Model) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "n", "p":
 		return m.nextUnread(s == "n")
 	case "esc":
-		if m.agentBusy && m.agentStop != nil {
-			m.agentStop()
-			return m, nil
-		}
-		if m.showAgent {
-			m.showAgent = false
-			return m, nil
-		}
 		if len(m.marked) > 0 {
 			m.marked, m.status = nil, "selection cleared"
 			return m, nil
+		}
+		if m.backToAsst { // opened from the Assistant's Found list
+			return m.backToAssistant()
 		}
 		if m.view.back != nil { // leave a thread view for where it was opened
 			return m.show(*m.view.back)
@@ -1022,24 +982,17 @@ func (m Model) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case pMessages:
 		return m.keyMessages(s)
 	default:
-		vp := &m.preview
-		if m.showAgent {
-			vp = &m.agentVP
-		}
 		var cmd tea.Cmd
-		before := vp.YOffset
-		*vp, cmd = vp.Update(k)
+		before := m.preview.YOffset
+		m.preview, cmd = m.preview.Update(k)
 		if s == "h" || s == "left" {
 			m.focus = pMessages
 		}
-		if !m.showAgent && m.preview.YOffset != before && m.inlineSixel() {
+		if m.preview.YOffset != before && m.inlineSixel() {
 			off := m.preview.YOffset // encode the newly visible image parts once scrolling pauses
 			cmd = tea.Batch(cmd, tea.Tick(120*time.Millisecond, func(time.Time) tea.Msg { return sixelTick{off} }))
 		}
-		if !m.showAgent {
-			return m.keyMessageActions(s, cmd)
-		}
-		return m, cmd
+		return m.keyMessageActions(s, cmd)
 	}
 }
 
@@ -1065,7 +1018,6 @@ func (m Model) keyMessages(s string) (tea.Model, tea.Cmd) {
 	switch s {
 	case "enter", "right":
 		m.focus = pDetail
-		m.showAgent = false
 		if x, ok := m.selected(); ok && !x.Read {
 			m.msgs[m.mcur].Read = true
 			c, ctx := m.c, m.ctx
@@ -1267,24 +1219,20 @@ func (m Model) keyMessageActions(s string, passthrough tea.Cmd) (tea.Model, tea.
 	case "U":
 		return m.startUnsubscribe(x)
 	case "z":
-		return m.askAgent(fmt.Sprintf("Summarize message id %d. If it is part of a thread, read the thread first and summarize the whole conversation. Then list any action items for me.", x.ID))
+		mm, cmd := m.openAssistant()
+		if mm.mode != mAssistant {
+			return mm, cmd
+		}
+		return mm.ask(fmt.Sprintf("summarize %q", bg.OneLine(x.Subject)),
+			fmt.Sprintf("Summarize message id %d. If it is part of a thread, read the thread first and summarize the whole conversation. Then list any action items for me.", x.ID))
 	}
 	return m, passthrough
 }
 
-func (m Model) startInput(purpose, placeholder, value string) (tea.Model, tea.Cmd) {
-	if purpose == "agent" && !m.ag.Enabled() {
-		m.status = "AI is off (LAZYTHUNDER_LLM_URL=off)"
-		return m, nil
-	}
-	if purpose == "agent" && m.agentBusy {
-		m.status = m.model() + " is busy (esc to cancel)"
-		return m, nil
-	}
-	m.mode, m.inputFor = mInput, purpose
-	m.input.Placeholder = placeholder
-	m.input.SetValue(value)
-	m.input.CursorEnd()
+func (m Model) startSearch() (tea.Model, tea.Cmd) {
+	m.mode = mInput
+	m.input.Placeholder = "search all accounts"
+	m.input.SetValue("")
 	return m, m.input.Focus()
 }
 
@@ -1301,55 +1249,15 @@ func (m Model) keyInput(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if v == "" {
 			return m, nil
 		}
-		if m.inputFor == "search" {
-			if m.view.folderIDs != nil {
-				m.prevView = m.view
-			}
-			m.focus = pMessages
-			return m.show(listView{title: fmt.Sprintf("Search: %s · all mail (esc back)", v), query: v})
+		if m.view.folderIDs != nil {
+			m.prevView = m.view
 		}
-		return m.askAgent(v)
+		m.focus = pMessages
+		return m.show(listView{title: fmt.Sprintf("Search: %s · all mail (esc back)", v), query: v})
 	}
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(k)
 	return m, cmd
-}
-
-func (m Model) askAgent(q string) (tea.Model, tea.Cmd) {
-	if !m.ag.Enabled() {
-		m.status = "AI is off (LAZYTHUNDER_LLM_URL=off)"
-		return m, nil
-	}
-	if m.agentBusy {
-		m.status = m.model() + " is busy (esc to cancel)"
-		return m, nil
-	}
-	m.showAgent, m.agentBusy = true, true
-	m.setPause(true)
-	m.say("you: " + q)
-	ctx, cancel := context.WithCancel(m.ctx)
-	m.agentStop = cancel
-	view := m.viewContext()
-	ag := m.ag
-	hooks := agent.Hooks{
-		Status:  func(s string) { prog.Send(agentStatusMsg(s)) },
-		Propose: func(d tb.Draft) { prog.Send(draftMsg{d}) },
-		Confirm: func(text string) bool {
-			reply := make(chan bool, 1)
-			prog.Send(confirmMsg{text, reply})
-			select {
-			case ok := <-reply:
-				return ok
-			case <-ctx.Done():
-				return false
-			}
-		},
-	}
-	return m, func() tea.Msg {
-		defer cancel()
-		text, err := ag.Ask(ctx, q, view, hooks)
-		return agentReplyMsg{text, err}
-	}
 }
 
 func (m Model) viewContext() string {
@@ -1357,6 +1265,8 @@ func (m Model) viewContext() string {
 	switch {
 	case m.view.thread != nil:
 		fmt.Fprintf(&b, "a conversation (%d messages): %s", len(m.view.thread), m.view.title)
+	case m.view.found != nil:
+		fmt.Fprintf(&b, "the %d messages you found earlier", len(m.view.found))
 	case m.view.folderIDs == nil:
 		fmt.Fprintf(&b, "search results for %q", m.view.query)
 	default:
@@ -1397,6 +1307,8 @@ func (m Model) modeAfterConfirm() mode {
 		return mPicker
 	case m.accts != nil:
 		return mAccounts
+	case m.asst.open:
+		return mAssistant // the Assistant's y/n, or compose opened from it
 	}
 	return mNormal
 }

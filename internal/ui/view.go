@@ -46,11 +46,7 @@ func (m *Model) layout() {
 	if m.sidebarOn() {
 		m.preview.Width = maxTextWidth // the sidebar takes the rest
 	}
-	m.agentVP.Width, m.agentVP.Height = m.w-2, m.bottomHeight()-3
 	m.attVP.Width, m.attVP.Height = m.w-2, m.bottomHeight()-3
-	if len(m.chat) > 0 {
-		m.agentVP.SetContent(m.renderChat())
-	}
 	m.input.Width = m.w - 4
 }
 
@@ -99,6 +95,9 @@ func (m Model) View() string {
 	}
 	if m.draft != nil && (m.mode == mDraft || m.mode == mConfirm) {
 		return strings.Join([]string{autowrapOff + m.viewTabs(), m.viewCompose(), m.viewBottom()}, "\n")
+	}
+	if m.asstShown() {
+		return strings.Join([]string{autowrapOff + m.viewTabs(), m.viewAssistant(), m.viewBottom()}, "\n")
 	}
 	top := m.viewMessages(m.w, m.topHeight())
 	// Autowrap off (DECAWM): a glyph the terminal draws wider than we measured
@@ -241,13 +240,6 @@ func (m Model) viewDetail(w, h int) string {
 		}
 		return panel(title, strings.Split(m.attVP.View(), "\n"), w, h, true)
 	}
-	if m.showAgent {
-		title := "[2] " + m.model() + " (esc: back to email)"
-		if m.agentBusy {
-			title = "[2] " + m.model() + " · " + m.agentState
-		}
-		return panel(title, strings.Split(m.agentVP.View(), "\n"), w, h, focused)
-	}
 	title := "[2] Preview"
 	if m.full != nil {
 		title = "[2] " + m.full.Subject
@@ -331,12 +323,9 @@ func (m Model) draftLines(w int) []string {
 	return append(append(head, ""), strings.Split(render.Text(d.Body, min(w, maxTextWidth)), "\n")...)
 }
 
-func (m Model) renderChat() string {
-	var parts []string
-	for _, c := range m.chat {
-		parts = append(parts, render.Text(c, m.agentVP.Width))
-	}
-	return strings.Join(parts, "\n\n")
+// asstShown: the Assistant screen is on (its y/n questions show inline).
+func (m Model) asstShown() bool {
+	return m.asst.open && m.draft == nil && (m.mode == mAssistant || m.mode == mConfirm)
 }
 
 // summaryBlock is the AI summary shown under the message headers.
@@ -436,7 +425,7 @@ func (m Model) viewBottom() string {
 	switch {
 	case m.mode == mInput:
 		return ansi.Truncate(m.input.View(), m.w, "")
-	case m.mode == mConfirm && m.confirm != nil:
+	case m.mode == mConfirm && m.confirm != nil && !m.asstShown():
 		text := render.Sanitize(m.confirm.text)
 		if m.confirm.onNo == nil { // with onNo the text spells out its keys
 			text += " [y/n]"
@@ -459,8 +448,14 @@ func (m Model) viewBottom() string {
 		hint = m.acctHelp()
 	case m.mode == mDraft && m.draft != nil:
 		hint = m.composeHint()
+	case m.asstShown() && m.confirm != nil:
+		hint = "y yes · n no"
+	case m.asstShown():
+		hint = m.asstHint()
+	case m.backToAsst:
+		hint = "esc back to the assistant · r reply · a archive · d delete · ? help"
 	default:
-		hint = "l folders · r reply · space select · a archive · d delete · C all read · F5 refresh · : agent · ? help"
+		hint = "l folders · r reply · space select · a archive · d delete · C all read · F5 refresh · : assistant · ? help"
 	}
 	gap := m.w - ansi.StringWidth(left) - ansi.StringWidth(hint)
 	if gap < 1 { // never let the status line wrap: that scrolls the whole screen
@@ -471,7 +466,7 @@ func (m Model) viewBottom() string {
 
 const helpText = `lazythunder — keys
 
- tabs          alt+1 all inboxes · alt+2..9 accounts · [ ] previous/next
+ tabs          alt+1 all inboxes · alt+2..9 accounts · [ ] previous/next · alt+0 or : the assistant
 
  navigation    tab, 1 2, enter / h             switch between list and message
                l                               folder picker
@@ -500,10 +495,10 @@ const helpText = `lazythunder — keys
                list: ● unread  ★ starred  ↩ you replied  → you forwarded  ▌ selected
                tags: ! high priority  reply  act  news  rcpt (receipt)  note (notification)  spam
 
- agent         :  ask the agent (it can search, read, and act with your y/n)
-               z  summarize selected message/thread
-               esc  back to the email (or cancel a running request)
-               X  new conversation
+ assistant     : or alt+0  the Assistant screen: ask, search, act (y/n first); found messages on the right
+               z  summarize the selected message/thread in the Assistant
+               enter ask · tab Found list (j k move, enter opens the message; esc there comes back)
+               ctrl+n new conversation · pgup pgdown scroll · esc cancel a running request, else back to mail
 
  compose       r R f c: type the gist + enter writes the draft (reply-guide.md), each message revises it
                ctrl+z undo · ctrl+e $EDITOR · pgup pgdown scroll · ctrl+s send · ctrl+d save to Drafts · esc close

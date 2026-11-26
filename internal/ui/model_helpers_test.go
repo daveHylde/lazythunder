@@ -129,7 +129,7 @@ func testModel(t *testing.T, c *tb.Client) Model {
 	ti := textinput.New()
 	ti.Prompt = "> "
 	m := Model{c: c, ctx: context.Background(), input: ti, accounts: map[string]tb.Account{},
-		preview: newViewport(), agentVP: newViewport(), attVP: newViewport(),
+		preview: newViewport(), attVP: newViewport(),
 		images: newImageStore(), replied: map[int]store.Reply{}, ready: true}
 	t.Cleanup(m.images.close)
 	m, _ = update(m, tea.WindowSizeMsg{Width: 120, Height: 40})
@@ -190,7 +190,7 @@ func keyMsg(s string) tea.KeyMsg {
 		"tab": tea.KeyTab, "delete": tea.KeyDelete, "f5": tea.KeyF5, "ctrl+c": tea.KeyCtrlC,
 		"down": tea.KeyDown, "up": tea.KeyUp, "home": tea.KeyHome, "end": tea.KeyEnd,
 		"ctrl+s": tea.KeyCtrlS, "ctrl+d": tea.KeyCtrlD, "ctrl+e": tea.KeyCtrlE, "ctrl+z": tea.KeyCtrlZ,
-		"pgup": tea.KeyPgUp, "pgdown": tea.KeyPgDown}
+		"pgup": tea.KeyPgUp, "pgdown": tea.KeyPgDown, "ctrl+n": tea.KeyCtrlN}
 	if t, ok := named[s]; ok {
 		return tea.KeyMsg{Type: t}
 	}
