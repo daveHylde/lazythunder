@@ -1208,6 +1208,12 @@ func (m Model) keyMessageActions(s string, passthrough tea.Cmd) (tea.Model, tea.
 			return m, nil
 		}
 		return m.openLinkPicker()
+	case "y":
+		if m.full == nil || m.full.ID != x.ID {
+			m.status = "open the message first"
+			return m, nil
+		}
+		return m.copyCodes()
 	case "t":
 		if m.full == nil || m.full.ID != x.ID {
 			m.status = "open the message first"

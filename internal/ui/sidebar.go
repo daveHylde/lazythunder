@@ -28,6 +28,7 @@ const (
 
 var (
 	sideTitle = lipgloss.NewStyle().Bold(true).Foreground(accent)
+	codeSt    = lipgloss.NewStyle().Bold(true) // a code to copy (y)
 	riskySt   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("1"))
 )
 
@@ -137,15 +138,32 @@ func (m Model) sidebarLines(w, h int) ([]string, *sixelReq) {
 	}
 	usable := func(n int) bool { return n >= 1 && n <= len(m.links) && !info[n].Suspicious }
 	used := map[int]bool{}
+	codes := codeActions(sum)
 	if len(sum.Actions) > 0 || len(m.links) > 0 {
-		top = append(top, section("Action items · o+n opens"))
+		title := "Action items · o+n opens"
+		switch {
+		case len(codes) == 1:
+			title += " · y copies"
+		case len(codes) > 1:
+			title += " · y+n copies"
+		}
+		top = append(top, section(title))
 	}
+	nCode := 0
 	for _, a := range sum.Actions {
 		text := a.Text
 		if usable(a.Link) {
 			text += fmt.Sprintf(" [%d]", a.Link)
 		}
 		top = append(top, wrapDim(text, "☐ ")...)
+		if a.Copy != "" {
+			nCode++
+			key := "y"
+			if len(codes) > 1 {
+				key = fmt.Sprintf("y%d", nCode)
+			}
+			top = append(top, ansi.Truncate("  "+codeSt.Render(render.Sanitize(a.Copy))+dim.Render(" · "+key), w, "…"))
+		}
 		if usable(a.Link) {
 			used[a.Link] = true
 			top = append(top, urlLine(a.Link))

@@ -48,7 +48,8 @@ gives you a fast, keyboard-only way to get through it all.
 - **A summary and a sidebar that tell you what matters.** A one-line AI summary under the
   headers, and a sidebar **Action items** list: action
   items tied to the link that does them, followed by every other safe link with a short title of
-  what it opens. Type `o` and the number to open one.
+  what it opens. Type `o` and the number to open one. Codes you need to type somewhere (login
+  codes, booking references, vouchers, tracking numbers) are action items too: `y` copies one.
 - **The whole conversation at a glance.** Above the action items, a **Thread** box lists the
   conversation's inbox messages, newest first, the open one highlighted; your own replies show at
   the top of the message they answer. Type `t` and the number to jump to one.
@@ -154,6 +155,7 @@ Press `?` in the app for the full list.
 | **Mail** | `r` reply · `R` reply all · `f` forward · `c` compose · `a` archive · `d`/`Del` trash · `M` move · `m` read/unread · `S` star · `C` mark folder read |
 | **Select** | `space` select in the list · `m` `S` `a` `d` `M` act on all selected · `esc` clears |
 | **Links** | `o` link list · `o3` opens link [3] · `y` copy |
+| **Codes** | `y` copies the message's code (login code, booking reference, voucher, tracking number) · `y2` the 2nd when several |
 | **Thread** | `t` thread list · `t2` opens message 2 of the thread (in the list, or the whole thread as a list; `esc` back) |
 | **Attachments** | `A` list · `enter` preview · `d` save to ~/Downloads · `o` open · `i` images full screen |
 | **Clean up** | `U` unsubscribe and trash |

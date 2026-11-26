@@ -486,6 +486,7 @@ const helpText = `lazythunder — keys
                i  view the message's images full screen (sixel/kitty)
                o  safe links (type n to open [n], enter open, y copy)
                t  the message's thread (type n to open message n, enter open)
+               y  copy the message's code (login code, booking ref, voucher…; y+n when several)
                U  unsubscribe without a browser (one-click, mail, or the agent on the page), then trash
                A  attachments (enter preview, d download, o open)
                list: ● unread  ★ starred  ↩ you replied  → you forwarded  ▌ selected

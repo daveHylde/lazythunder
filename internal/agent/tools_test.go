@@ -501,3 +501,22 @@ func TestReplyGuideFile(t *testing.T) {
 		t.Fatalf("edited guide %q", got)
 	}
 }
+
+func TestSummarizeKeepsOnlyCodesInTheEmail(t *testing.T) {
+	srv, _ := llm(t, func(int) string {
+		return choice(`{"content":"{\"summary\":\"Login code\",\"actions\":[` +
+			`{\"text\":\"Enter the code\",\"link\":0,\"copy\":\" 483 920 \"},` +
+			`{\"text\":\"Use the voucher\",\"link\":0,\"copy\":\"SAVE-50\"},` +
+			`{\"text\":\"Track it\",\"link\":0,\"copy\":\"XX\"}],` +
+			`\"links\":[],\"category\":\"notification\",\"priority\":\"high\"}"}`)
+	})
+	a := &Agent{URL: srv.URL, HTTP: srv.Client()}
+	s, err := a.Summarize(context.Background(), "Bank", "Your code", "Your code is 483920. Valid 10 minutes.", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := []string{s.Actions[0].Copy, s.Actions[1].Copy, s.Actions[2].Copy}
+	if got[0] != "483 920" || got[1] != "" || got[2] != "" {
+		t.Fatalf("copy %q: want the code that is in the email (spacing aside), nothing invented or too short", got)
+	}
+}
