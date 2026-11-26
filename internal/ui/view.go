@@ -220,7 +220,7 @@ func noteTag(n store.Meta) string {
 
 func (m Model) viewDetail(w, h int) string {
 	focused := m.focus == pDetail
-	if m.draft != nil && (m.mode == mDraft || m.mode == mConfirm) {
+	if m.draft != nil && (m.mode == mDraft || m.mode == mConfirm || m.mode == mInput && m.inputFor == "revise") {
 		return panel("[2] "+kindName(m.draft.Kind), m.draftLines(w-2), w, h, true)
 	}
 	if m.accts != nil && m.draft == nil && (m.mode == mAccounts || m.mode == mConfirm) {
@@ -325,7 +325,11 @@ func (m Model) draftLines(w int) []string {
 	for i := range head {
 		head[i] = dim.Render(render.Sanitize(head[i]))
 	}
-	help := bold.Render("e edit · enter save draft · S send · x discard")
+	help := "e edit · : revise with AI · enter save draft · S send · x discard"
+	if len(m.draftUndo) > 0 {
+		help = "e edit · : revise again · u undo · enter save draft · S send · x discard"
+	}
+	help = bold.Render(help)
 	return append(append(append([]string{help, ""}, head...), ""), strings.Split(render.Text(d.Body, min(w, maxTextWidth)), "\n")...)
 }
 

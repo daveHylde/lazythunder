@@ -396,7 +396,7 @@ func TestReplyDraftSave(t *testing.T) {
 		t.Fatalf("err %q draft %+v file %q", m.err, m.draft, m.draftFile)
 	}
 	view := screen(m)
-	for _, want := range []string{"[2] Reply", "e edit · enter save draft · S send · x discard", "Takk!"} {
+	for _, want := range []string{"[2] Reply", "e edit · : revise with AI · enter save draft · S send · x discard", "Takk!"} {
 		if !strings.Contains(view, want) {
 			t.Errorf("view lacks %q", want)
 		}

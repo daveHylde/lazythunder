@@ -520,3 +520,33 @@ func TestSummarizeKeepsOnlyCodesInTheEmail(t *testing.T) {
 		t.Fatalf("copy %q: want the code that is in the email (spacing aside), nothing invented or too short", got)
 	}
 }
+
+func TestReviseDraft(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir()) // the default reply guide, not the user's
+	srv, reqs := llm(t, func(int) string {
+		return choice(`{"content":"{\"subject\":\"\",\"body\":\"  Hei,\\n\\nKort versjon.\\n\\nMvh\\nDavid  \"}"}`)
+	})
+	a := &Agent{URL: srv.URL, HTTP: srv.Client()}
+	r, err := a.ReviseDraft(context.Background(), "From: shop\n\nBlack Friday!", "Re: Black Friday", "Hei,\n\nLang tekst.\n\nMvh\nDavid", "kortere")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Body != "Hei,\n\nKort versjon.\n\nMvh\nDavid" || r.Subject != "Re: Black Friday" {
+		t.Fatalf("revision %+v (body trimmed, empty subject keeps the old one)", r)
+	}
+	msgs := reqs()[0]["messages"].([]any)
+	system, user := msgs[0].(map[string]any)["content"].(string), msgs[1].(map[string]any)["content"].(string)
+	if !strings.Contains(system, "Language: reply in the language") {
+		t.Error("reply guide not in the prompt")
+	}
+	for _, want := range []string{"Black Friday!", "Lang tekst.", "Instruction: kortere"} {
+		if !strings.Contains(user, want) {
+			t.Errorf("prompt lacks %q", want)
+		}
+	}
+	srv2, _ := llm(t, func(int) string { return choice(`{"content":"{\"subject\":\"x\",\"body\":\" \"}"}`) })
+	a.URL = srv2.URL
+	if _, err := a.ReviseDraft(context.Background(), "", "x", "y", "z"); err == nil {
+		t.Error("an empty revision must be an error, not a blank draft")
+	}
+}

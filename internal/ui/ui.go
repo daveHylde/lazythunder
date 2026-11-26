@@ -131,6 +131,9 @@ type Model struct {
 	draftCtx    string
 	draftFile   string       // edited file kept after a parse error so the text isn't lost
 	submitting  bool         // a save/send is in flight
+	draftGen    int          // bumped per opened draft: a late revision can't land on another one
+	draftUndo   []tb.Draft   // versions before each agent revision (u restores)
+	revising    bool         // an agent revision is in flight
 	pending     *tb.Draft    // agent draft waiting for the current draft to finish
 	moveIDs     []int        // messages the move picker will move
 	marked      map[int]bool // space-selected message ids; actions apply to all of them
@@ -690,6 +693,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case sendingMsg:
 		m.submitting, m.status = true, "sending…"
 		return m, nil
+	case revisedMsg:
+		return m.applyRevision(msg)
 	case submittedMsg:
 		m.submitting = false
 		if msg.err != nil {
@@ -1272,15 +1277,21 @@ func (m Model) startInput(purpose, placeholder, value string) (tea.Model, tea.Cm
 func (m Model) keyInput(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch k.String() {
 	case "esc":
-		m.mode = mNormal
+		m.mode = m.modeAfterConfirm() // back to the draft when asked from there
 		m.input.Blur()
 		return m, nil
 	case "enter":
 		v := strings.TrimSpace(m.input.Value())
-		m.mode = mNormal
+		m.mode = m.modeAfterConfirm()
 		m.input.Blur()
 		if v == "" {
 			return m, nil
+		}
+		if m.inputFor == "revise" {
+			if m.draft == nil {
+				return m, nil
+			}
+			return m.revise(v)
 		}
 		if m.inputFor == "search" {
 			if m.view.folderIDs != nil {
@@ -1386,6 +1397,8 @@ func (m Model) modeAfterConfirm() mode {
 
 func (m Model) openDraft(d tb.Draft) Model {
 	m.draft, m.draftCtx, m.draftFile, m.mode = &d, m.contextFor(d), "", mDraft
+	m.draftGen++
+	m.draftUndo, m.revising = nil, false
 	return m
 }
 
@@ -1418,9 +1431,17 @@ func (m Model) keyDraft(s string) (tea.Model, tea.Cmd) {
 		return func() tea.Msg { return submittedMsg{send, c.Submit(ctx, d, send)} }
 	}
 	switch s {
+	case ":":
+		return m.startRevise()
+	case "u":
+		return m.undoRevision()
 	case "e":
 		return m, m.edit()
 	case "enter", "D", "S":
+		if m.revising {
+			m.status = "still revising… (wait, or x to discard)"
+			return m, nil
+		}
 		if m.draftFile != "" {
 			m.err = "fix the draft first (e to edit)"
 			return m, nil
