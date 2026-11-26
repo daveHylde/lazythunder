@@ -217,6 +217,9 @@ func (m Model) viewDetail(w, h int) string {
 	if m.full != nil {
 		title = "[2] " + m.full.Subject
 	}
+	if x, ok := m.selected(); ok && (m.full == nil || m.full.ID != x.ID) && m.previewFailed != x.ID {
+		title = "[2] loading " + x.Subject + "…"
+	}
 	left := m.withSixel(strings.Split(m.preview.View(), "\n"))
 	if m.sidebarOn() && m.full != nil {
 		left = m.composeDetail(left, m.preview.Width)

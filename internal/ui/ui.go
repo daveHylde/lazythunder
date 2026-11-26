@@ -73,17 +73,18 @@ type Model struct {
 	listSeq    int
 	searchLeft int // search halves still running
 
-	preview    viewport.Model
-	full       *tb.FullMessage
-	images     *imageStore
-	sum        *summarizer
-	sidebar    bool // b toggles the message sidebar (summary, actions, links, attachments)
-	attPrev    *attPreview
-	attCancel  context.CancelFunc
-	cellW      int // terminal cell size in px (0 if unknown)
-	cellH      int
-	placements []render.Placement // inline images in the preview, for sixel overlay
-	links      []link             // links in the open message, for the picker
+	preview       viewport.Model
+	full          *tb.FullMessage
+	previewFailed int // message whose preview failed to load (its error is shown)
+	images        *imageStore
+	sum           *summarizer
+	sidebar       bool // b toggles the message sidebar (summary, actions, links, attachments)
+	attPrev       *attPreview
+	attCancel     context.CancelFunc
+	cellW         int // terminal cell size in px (0 if unknown)
+	cellH         int
+	placements    []render.Placement // inline images in the preview, for sixel overlay
+	links         []link             // links in the open message, for the picker
 
 	viewGen      int // bumped when the list changes view; stale async results are dropped
 	viewCtx      context.Context
@@ -415,8 +416,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.seq != m.previewSeq {
 			return m, nil
 		}
-		if msg.err != nil {
-			m.err = msg.err.Error()
+		if msg.err != nil { // show the failure, never the previous message as if it were this one
+			m.full, m.placements, m.links, m.attPrev = nil, nil, nil, nil
+			if x, ok := m.selected(); ok {
+				m.previewFailed = x.ID
+			}
+			m.preview.SetContent(errSt.Render("Could not load this message: " + msg.err.Error()))
+			m.preview.GotoTop()
 			return m, nil
 		}
 		m.full = &msg.m

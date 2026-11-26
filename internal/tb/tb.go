@@ -52,13 +52,32 @@ type envelope struct {
 	Code  string          `json:"code"`
 }
 
+// runSlack is how long past tb's own timeout Run waits before killing it.
+var runSlack = 30 * time.Second
+
 // Run executes `tb args...` and decodes the envelope's data into out (if non-nil).
 func (c *Client) Run(ctx context.Context, out any, args ...string) error {
+	// tb has its own timeout (30s, or --timeout), but a wedged bridge or
+	// Node process must never leave a caller waiting forever.
+	limit := 30*time.Second + runSlack
+	for i := 0; i+1 < len(args); i++ {
+		if args[i] == "--timeout" {
+			if ms, err := strconv.Atoi(args[i+1]); err == nil {
+				limit = time.Duration(ms)*time.Millisecond + runSlack
+			}
+		}
+	}
+	ctx, cancel := context.WithTimeout(ctx, limit)
+	defer cancel()
 	cmd := exec.CommandContext(ctx, c.Bin, args...)
+	cmd.WaitDelay = 5 * time.Second // don't wait on pipes held open by stray children
 	cmd.Env = append(os.Environ(), "TB_BRIDGE_PORT="+c.Port)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	runErr := cmd.Run()
+	if ctx.Err() == context.DeadlineExceeded {
+		return fmt.Errorf("tb %s: no answer from Thunderbird after %s", args[0], limit.Round(time.Second))
+	}
 	name := args[0]
 	for i := 0; i < len(args) && strings.HasPrefix(args[i], "-"); i += 2 { // skip global flags like --timeout N
 		if i+2 < len(args) {
@@ -181,7 +200,30 @@ type SearchOpts struct {
 // unbounded search over a large profile takes minutes in the add-on.
 const SearchWindow = "90d"
 
-func (c *Client) Search(ctx context.Context, query string, o SearchOpts) (p Page, err error) {
+func (c *Client) Search(ctx context.Context, query string, o SearchOpts) (Page, error) {
+	lower := strings.ToLower(query)
+	if lower == query {
+		return c.search(ctx, query, o)
+	}
+	// The full-text index is case sensitive in practice ("Domene" finds
+	// nothing, "domene" finds it), so also search lowercase and merge.
+	var a, b Page
+	var errA, errB error
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() { defer wg.Done(); b, errB = c.search(ctx, lower, o) }()
+	a, errA = c.search(ctx, query, o)
+	wg.Wait()
+	if errA != nil && errB != nil {
+		return Page{}, errA
+	}
+	a.Messages = MergeNewest(a.Messages, b.Messages)
+	a.HasMore = a.HasMore || b.HasMore
+	a.Total = len(a.Messages)
+	return a, nil
+}
+
+func (c *Client) search(ctx context.Context, query string, o SearchOpts) (p Page, err error) {
 	args := []string{"--timeout", "120000", "search", query}
 	if query != "" && o.Since == "" {
 		o.Since = SearchWindow
@@ -217,7 +259,10 @@ func (c *Client) Search(ctx context.Context, query string, o SearchOpts) (p Page
 // newest first. These native header queries take a second or two, unlike
 // the full-text index, so search shows them first.
 func (c *Client) SearchHeaders(ctx context.Context, query string, unread bool) ([]Message, error) {
-	opts := []SearchOpts{{From: query}, {Subject: query}}
+	opts := []SearchOpts{{From: query}}     // author matching ignores case
+	for _, v := range caseVariants(query) { // subject matching does not
+		opts = append(opts, SearchOpts{Subject: v})
+	}
 	pages := make([]Page, len(opts))
 	errs := make([]error, len(opts))
 	var wg sync.WaitGroup
@@ -235,10 +280,41 @@ func (c *Client) SearchHeaders(ctx context.Context, query string, unread bool) (
 		all = append(all, p.Messages...)
 	}
 	all = MergeNewest(nil, all)
-	if errs[0] != nil && errs[1] != nil {
+	failed := 0
+	for _, e := range errs {
+		if e != nil {
+			failed++
+		}
+	}
+	if failed == len(errs) {
 		return nil, errors.Join(errs...)
 	}
 	return all, errors.Join(errs...)
+}
+
+// caseVariants are the spellings a case-sensitive match must try: as typed,
+// lower, UPPER, Capitalized and Title Case.
+func caseVariants(q string) []string {
+	title := strings.Fields(strings.ToLower(q))
+	for i, w := range title {
+		r := []rune(w)
+		title[i] = strings.ToUpper(string(r[:1])) + string(r[1:])
+	}
+	lower := strings.ToLower(q)
+	r := []rune(lower)
+	capital := lower
+	if len(r) > 0 {
+		capital = strings.ToUpper(string(r[:1])) + string(r[1:])
+	}
+	var out []string
+	seen := map[string]bool{}
+	for _, v := range []string{q, lower, strings.ToUpper(q), capital, strings.Join(title, " ")} {
+		if v != "" && !seen[v] {
+			seen[v] = true
+			out = append(out, v)
+		}
+	}
+	return out
 }
 
 // MergeNewest adds more to have without duplicates (by id), newest first.
