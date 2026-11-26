@@ -466,9 +466,24 @@ func (c *Client) Mark(ctx context.Context, ids []int, flag string) error {
 	return c.Run(ctx, nil, "mark", joinIDs(ids), "--"+flag)
 }
 
-// MarkFolderRead marks every message in a folder as read.
+// MarkFolderRead marks every message in a folder as read. tb's bulk
+// mark-read handles one batch of unread messages per call, so repeat until a
+// batch comes back short.
 func (c *Client) MarkFolderRead(ctx context.Context, folderID string) error {
-	return c.Run(ctx, nil, "bulk", "mark-read", folderID)
+	const batch = 500
+	for range 200 { // cap: never spin if marks don't stick
+
+		var out struct {
+			Marked int `json:"marked"`
+		}
+		if err := c.Run(ctx, &out, "--timeout", "300000", "bulk", "mark-read", folderID, "--limit", strconv.Itoa(batch)); err != nil { // one update per message: slow
+			return err
+		}
+		if out.Marked < batch {
+			return nil
+		}
+	}
+	return fmt.Errorf("%s still has unread messages after marking 100000", folderID)
 }
 
 func (c *Client) Move(ctx context.Context, ids []int, folderID string) error {
