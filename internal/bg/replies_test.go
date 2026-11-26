@@ -52,3 +52,17 @@ func TestSplitSubject(t *testing.T) {
 		t.Error("'Retur' must not count as a Re: prefix")
 	}
 }
+
+// Thunderbird drops "Re:" from subjects: a reply to a forwarded mail ("VS: X")
+// reads "VS: X" too and must not count as forwarding it back to its sender.
+func TestReplyToForwardedMailIsAReply(t *testing.T) {
+	t0 := time.Date(2026, 11, 17, 9, 8, 0, 0, time.UTC)
+	msgs := []tb.Message{{ID: 477, Subject: "VS: Oppdatere admin iht. Brønnøysund", Author: "Anne Weel Fransson <awf@bnh.no>", Date: t0}}
+	sent := []tb.Message{
+		{ID: 1004, Subject: "VS: Oppdatere admin iht. Brønnøysund", Recipients: []string{"Anne Weel Fransson <awf@bnh.no>"}, Date: t0.Add(27 * time.Minute)},
+		{ID: 1005, Subject: "Fwd: VS: Oppdatere admin iht. Brønnøysund", Recipients: []string{"kollega@jobbi.no"}, Date: t0.Add(time.Hour)},
+	}
+	if r := MatchReplies(msgs, sent)[477]; r.Kind != 'r' || r.SentID != 1004 {
+		t.Fatalf("got %+v, want the reply 1004", r)
+	}
+}

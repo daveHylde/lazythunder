@@ -71,6 +71,12 @@ func MatchReplies(msgs, sent []tb.Message) map[int]store.Reply {
 			if !c.m.Date.After(m.Date) || c.m.ID == m.ID {
 				continue
 			}
+			// Thunderbird drops a leading "Re:" from subjects, so a reply to
+			// "VS: X" reads "VS: X" too: the same subject as the message is a
+			// reply, only an added prefix makes a forward.
+			if sameSubject(c.m.Subject, m.Subject) {
+				c.kind = 'r'
+			}
 			to := ""
 			if len(c.m.Recipients) > 0 {
 				to = c.m.Recipients[0]
@@ -92,6 +98,10 @@ func MatchReplies(msgs, sent []tb.Message) map[int]store.Reply {
 		}
 	}
 	return out
+}
+
+func sameSubject(a, b string) bool {
+	return strings.EqualFold(strings.TrimSpace(a), strings.TrimSpace(b))
 }
 
 // better: a reply beats a forward; between equals the earlier one wins.
