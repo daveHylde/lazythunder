@@ -46,6 +46,16 @@ func (f *fakeMail) Read(_ context.Context, id int) (tb.FullMessage, error) {
 
 func (f *fakeMail) Headers(context.Context, int) (mail.Header, error) { return f.headers, nil }
 
+func (f *fakeMail) ByMessageID(_ context.Context, hdr string) ([]tb.Message, error) {
+	var out []tb.Message
+	for _, m := range f.full {
+		if m.HeaderMessageID == hdr {
+			out = append(out, m.Message)
+		}
+	}
+	return out, nil
+}
+
 type fakeAI struct {
 	calls int
 	sum   *agent.Summary // nil: a low-priority newsletter
@@ -187,6 +197,25 @@ func TestPollerRetriesFailedEnqueue(t *testing.T) {
 	}
 	if st, _, _ := s.JobState("new"); st != "queued" {
 		t.Fatalf("not queued on retry: %q", st)
+	}
+}
+
+func TestWorkerFindsMessageAgainAfterIDsChange(t *testing.T) {
+	s := openStore(t)
+	other, moved := tb.FullMessage{}, tb.FullMessage{}
+	other.ID, other.HeaderMessageID = 7, "someone-else"
+	moved.ID, moved.HeaderMessageID = 9, "h"
+	ai := &fakeAI{sum: &agent.Summary{Summary: "gist"}}
+	w := &Worker{Store: s, Mail: &fakeMail{full: map[int]tb.FullMessage{7: other, 9: moved}}, AI: ai, Name: "t"}
+	s.Enqueue("h", 7, 0) // id 7 was "h" before Thunderbird restarted
+	if _, err := w.Step(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, ok, _ := s.Note("h"); !ok {
+		t.Fatal("no note for h")
+	}
+	if _, _, _, ok, _ := s.Note("someone-else"); ok {
+		t.Fatal("note written for the wrong message")
 	}
 }
 

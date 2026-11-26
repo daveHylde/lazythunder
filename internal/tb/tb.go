@@ -668,6 +668,12 @@ func sortNewestFirst(ms []Message) {
 	sort.SliceStable(ms, func(i, j int) bool { return ms[i].Date.After(ms[j].Date) })
 }
 
+// ByMessageID finds every copy of a message by its Message-ID, in all folders
+// (slow: a scan of every folder).
+func (c *Client) ByMessageID(ctx context.Context, hdr string) (ms []Message, err error) {
+	return ms, c.call(ctx, "byMessageId", map[string]any{"lookups": []map[string]string{{"id": hdr}}}, &ms)
+}
+
 func (c *Client) Read(ctx context.Context, id int) (m FullMessage, err error) {
 	return m, c.call(ctx, "read", map[string]any{"id": id}, &m)
 }

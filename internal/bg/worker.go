@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/mail"
 	"os"
 	"path/filepath"
@@ -40,6 +41,7 @@ type Mail interface {
 	Search(ctx context.Context, query string, o tb.SearchOpts) (tb.Page, error)
 	Read(ctx context.Context, id int) (tb.FullMessage, error)
 	Headers(ctx context.Context, id int) (mail.Header, error)
+	ByMessageID(ctx context.Context, hdr string) ([]tb.Message, error)
 }
 
 // AI is the part of the agent the worker needs (*agent.Agent).
@@ -150,6 +152,18 @@ func (w *Worker) process(ctx context.Context, hdr string, id int) error {
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Minute)
 	defer cancel()
 	m, err := w.Mail.Read(ctx, id)
+	// Message ids are only stable while Thunderbird runs: after a restart id
+	// may be gone or another message, so find the message again by Message-ID.
+	if tb.Code(err) == "NOT_FOUND" || err == nil && m.HeaderMessageID != hdr {
+		ms, ferr := w.Mail.ByMessageID(ctx, hdr)
+		if ferr != nil {
+			return ferr
+		}
+		if len(ms) == 0 {
+			return fmt.Errorf("message %s no longer exists", hdr)
+		}
+		m, err = w.Mail.Read(ctx, ms[0].ID)
+	}
 	if err != nil {
 		return err
 	}
