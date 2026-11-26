@@ -230,9 +230,18 @@ func (s *Store) NoteMeta(hdrs []string) (map[string]Meta, error) {
 // note or its job is running; a failed job is requeued, and a queued job
 // keeps the higher of the two priorities. Either way its attempts start over.
 func (s *Store) Enqueue(hdr string, msgID, prio int) error {
+	return s.enqueue(hdr, msgID, prio, false)
+}
+
+// Requeue is Enqueue even when a note exists: the stored note is outdated.
+func (s *Store) Requeue(hdr string, msgID, prio int) error {
+	return s.enqueue(hdr, msgID, prio, true)
+}
+
+func (s *Store) enqueue(hdr string, msgID, prio int, redo bool) error {
 	_, err := s.db.Exec(`INSERT INTO jobs (hdr, msg_id, prio, state, updated)
 		SELECT ?1, ?2, ?3, 'queued', ?4
-		WHERE NOT EXISTS (SELECT 1 FROM notes WHERE hdr = ?1)
+		WHERE ?5 OR NOT EXISTS (SELECT 1 FROM notes WHERE hdr = ?1)
 		ON CONFLICT (hdr) DO UPDATE SET
 			msg_id = excluded.msg_id,
 			prio = max(prio, excluded.prio),
@@ -240,7 +249,7 @@ func (s *Store) Enqueue(hdr string, msgID, prio int) error {
 			err = '',
 			attempts = 0,
 			state = 'queued'
-		WHERE state != 'running'`, hdr, msgID, prio, now().UnixNano())
+		WHERE state != 'running'`, hdr, msgID, prio, now().UnixNano(), redo)
 	return err
 }
 

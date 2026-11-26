@@ -19,10 +19,10 @@ gives you a fast, keyboard-only way to get through it all.
 │★  Nov 24 Posten          me@gmail.com   Pakken din er klar til henting                       │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────╯
 ╭[2] Faktura 2026-118 forfaller fredag─────────────────────────────────────────────────────────╮
-│From: Fiken <noreply@fiken.no>                       │ To do · o+n opens ─────────────────────│
+│From: Fiken <noreply@fiken.no>                       │ Action items · o+n opens ──────────────│
 │Date: Wed 2026-11-25 09:14                           │ ☐ Pay the invoice by Friday [1]        │
-│📎 faktura-118.pdf (84 KB)                           │   fiken.no/betal/2026-118              │
-│✦ Invoice of 4 200 kr is due on Friday.              │ [2] View invoice online                │
+│──────────────────────────────────────────────────── │   fiken.no/betal/2026-118              │
+│✦ Invoice of 4 200 kr is due on Friday.              │ [2] Open the invoice on Fiken          │
 │──────────────────────────────────────────────────── │   fiken.no/faktura/2026-118            │
 │Hei!                                                 │                                        │
 │                                                     │ Attachments (1) · A ───────────────────│
@@ -46,7 +46,7 @@ gives you a fast, keyboard-only way to get through it all.
   with sixel or kitty graphics, and as half-blocks in any other terminal. `i` opens them full
   screen.
 - **A summary and a sidebar that tell you what matters.** A one-line AI summary under the
-  headers, and a sidebar **To do** list: action
+  headers, and a sidebar **Action items** list: action
   items tied to the link that does them, followed by every other safe link with a short title of
   what it opens. Type `o` and the number to open one.
 - **Triage at a glance.** Every summarized message gets a short dim tag before its subject:
@@ -116,7 +116,7 @@ lazythunder runs on Linux. Links and files open through `xdg-open`.
 
 ## AI setup
 
-AI is optional. It powers summaries, To do items, link titles, the assistant (`:`, `z`), AI
+AI is optional. It powers summaries, action items, link titles, the assistant (`:`, `z`), AI
 replies (`W`), suspicious-link detection, and unsubscribing through web pages. The endpoint must
 support OpenAI-style chat completions with tool calling and JSON-schema output.
 

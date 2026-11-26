@@ -349,7 +349,8 @@ func (m Model) summaryBlock(hdr string, w int) string {
 	default:
 		text = dim.Render("rest on the message for a summary")
 	}
-	return sideTitle.Render("✦ ") + strings.ReplaceAll(text, "\n", "\n  ") + "\n"
+	rule := dim.Render(strings.Repeat("─", w)) + "\n" // its own section: ruled off from the headers and the body
+	return rule + sideTitle.Render("✦ ") + strings.ReplaceAll(text, "\n", "\n  ") + "\n"
 }
 
 // renderMessage returns the preview text, the image srcs still to fetch and

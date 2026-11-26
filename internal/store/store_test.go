@@ -319,3 +319,22 @@ func TestDataVersion(t *testing.T) {
 		t.Fatal("data_version unchanged after another handle's write")
 	}
 }
+
+func TestRequeueRedoesExistingNote(t *testing.T) {
+	s := open(t, filepath.Join(t.TempDir(), "db"))
+	if err := s.PutNote("h", []byte(`{}`), "", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Enqueue("h", 1, 0); err != nil {
+		t.Fatal(err)
+	}
+	if st, _, _ := s.JobState("h"); st != "" {
+		t.Fatalf("Enqueue with a note queued it: %q", st)
+	}
+	if err := s.Requeue("h", 1, 0); err != nil {
+		t.Fatal(err)
+	}
+	if st, _, _ := s.JobState("h"); st != "queued" {
+		t.Fatalf("Requeue state = %q", st)
+	}
+}

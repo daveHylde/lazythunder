@@ -130,7 +130,7 @@ func (m Model) sidebarLines(w, h int) ([]string, *sixelReq) {
 	var top []string
 	sum := m.noteFor(x.HeaderMessageID).sum
 
-	// To do: action items (with the link that does them), then the other safe links
+	// Action items (with the link that does them), then the other safe links
 	info := linkInfos(sum)
 	urlLine := func(n int) string {
 		return dim.Render(ansi.Truncate("  "+shortURL(m.links[n-1].url), w, "…"))
@@ -138,7 +138,7 @@ func (m Model) sidebarLines(w, h int) ([]string, *sixelReq) {
 	usable := func(n int) bool { return n >= 1 && n <= len(m.links) && !info[n].Suspicious }
 	used := map[int]bool{}
 	if len(sum.Actions) > 0 || len(m.links) > 0 {
-		top = append(top, section("To do · o+n opens"))
+		top = append(top, section("Action items · o+n opens"))
 	}
 	for _, a := range sum.Actions {
 		text := a.Text

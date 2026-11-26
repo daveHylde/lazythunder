@@ -100,7 +100,12 @@ func (m Model) enqueueNote(id int, hdr string) tea.Cmd {
 		return nil
 	}
 	return func() tea.Msg {
-		if err := st.Enqueue(hdr, id, 10); err != nil {
+		enqueue := st.Enqueue
+		var old agent.Summary
+		if data, _, _, ok, _ := st.Note(hdr); ok && json.Unmarshal(data, &old) == nil && old.Version < agent.SummaryVersion {
+			enqueue = st.Requeue // written by an older prompt: redo it, the old note shows meanwhile
+		}
+		if err := enqueue(hdr, id, 10); err != nil {
 			return statusMsg("queue summary: " + err.Error())
 		}
 		w.Wake()

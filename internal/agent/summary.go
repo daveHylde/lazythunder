@@ -10,6 +10,7 @@ import (
 // Summary is the sidebar's one-line gist of an email, what to do about it,
 // a short title for each numbered link, and how the list should tag it.
 type Summary struct {
+	Version  int        `json:"v,omitempty"` // SummaryVersion that wrote it; older ones are redone when viewed
 	Summary  string     `json:"summary"`
 	Actions  []Action   `json:"actions"`
 	Links    []LinkInfo `json:"links"`
@@ -37,7 +38,7 @@ const summaryPrompt = `Summarize the email for a busy reader in at most 12 words
 Then list up to 3 concrete action items for the recipient, each under 10 words; an empty list if nothing needs doing.
 Newsletters, receipts and notifications usually need no action.
 Links in the email are marked [n] and listed under "Links". If an action is done by opening one of them, set its "link" to that n, else 0.
-For every listed link, give a title of at most 5 words saying what it opens (e.g. "Order status", "Pay invoice", "Read full article"), in the email's language.
+For every listed link, give a title of at most 6 words that says what opening it does for the reader: start with a verb and name the site or thing it leads to (e.g. "Go to your Instagram account", "Open Jollyroom's website", "Answer the survey", "Pay the invoice", "Track your order"), in the email's language. Never just repeat the site's name.
 Set "suspicious" when a link looks like phishing: it asks for a login or payment on a site that does not fit the sender, or the text and target disagree.
 Set "category" to one of: "reply-needed" (the sender expects an answer from the recipient), "action" (something to do, but no reply), "fyi" (worth reading, nothing to do), "newsletter", "receipt" (orders, invoices, bookings, payments), "notification" (automated alerts and updates), "spam".
 Set "priority" to "high" when it is urgent or has a near deadline, "low" for newsletters, notifications and spam, otherwise "normal".`
@@ -63,6 +64,10 @@ var summarySchema = map[string]any{
 	"required": []string{"summary", "actions", "links", "category", "priority"},
 }
 
+// SummaryVersion is bumped when the prompt changes enough that stored notes
+// should be redone (2: verb-first, descriptive link titles).
+const SummaryVersion = 2
+
 // MaxLinks is how many numbered links Summarize titles.
 const MaxLinks = 25
 
@@ -85,6 +90,7 @@ func (a *Agent) Summarize(ctx context.Context, from, subject, body string, links
 	err := a.structured(ctx, "summary", summaryPrompt, fmt.Sprintf("From: %s\nSubject: %s\n\n%s", from, subject, body),
 		summarySchema, 320+25*min(len(links), MaxLinks), &sum)
 	sum.Summary = strings.TrimSpace(sum.Summary)
+	sum.Version = SummaryVersion
 	return sum, err
 }
 
