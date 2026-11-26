@@ -49,6 +49,9 @@ gives you a fast, keyboard-only way to get through it all.
   headers, and a sidebar **Action items** list: action
   items tied to the link that does them, followed by every other safe link with a short title of
   what it opens. Type `o` and the number to open one.
+- **The whole conversation at a glance.** Above the action items, a **Thread** box lists every
+  message of the conversation (your replies in Sent too), the open one highlighted. Type `t` and
+  the number to jump to one.
 - **Triage at a glance.** Every summarized message gets a short dim tag before its subject:
   `reply` (needs your answer), `act` (something to do), `news`, `rcpt` (receipts), `note`
   (notifications) or `spam`, and `!` when it is urgent. Plain FYI mail gets no tag.
@@ -151,6 +154,7 @@ Press `?` in the app for the full list.
 | **Mail** | `r` reply · `R` reply all · `f` forward · `c` compose · `a` archive · `d`/`Del` trash · `M` move · `m` read/unread · `S` star · `C` mark folder read |
 | **Select** | `space` select in the list · `m` `S` `a` `d` `M` act on all selected · `esc` clears |
 | **Links** | `o` link list · `o3` opens link [3] · `y` copy |
+| **Thread** | `t` thread list · `t2` opens message 2 of the thread (in the list, or the whole thread as a list; `esc` back) |
 | **Attachments** | `A` list · `enter` preview · `d` save to ~/Downloads · `o` open · `i` images full screen |
 | **Clean up** | `U` unsubscribe and trash |
 | **AI** | `:` ask · `z` summarize message or thread · `W` write a reply · `X` new chat · `esc` cancel / back to the email |

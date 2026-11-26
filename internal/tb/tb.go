@@ -430,13 +430,9 @@ func (c *Client) FullText(ctx context.Context, query string, o SearchOpts, emit 
 	if err != nil {
 		return false, err
 	}
-	db := c.Gloda
-	if db == "" {
-		dir, err := profile.Dir()
-		if err != nil {
-			return false, err
-		}
-		db = filepath.Join(dir, "global-messages-db.sqlite")
+	db, err := c.glodaPath()
+	if err != nil {
+		return false, err
 	}
 	limit := o.Limit
 	if limit <= 0 {
@@ -450,6 +446,53 @@ func (c *Client) FullText(ctx context.Context, query string, o SearchOpts, emit 
 	if err != nil {
 		return false, fmt.Errorf("full-text search: %w", err)
 	}
+	stopped, err := c.resolveHits(ctx, hits, o, limit, emit)
+	return err == nil && (stopped || len(hits) >= fetch), err
+}
+
+func (c *Client) glodaPath() (string, error) {
+	if c.Gloda != "" {
+		return c.Gloda, nil
+	}
+	dir, err := profile.Dir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "global-messages-db.sqlite"), nil
+}
+
+// ThreadItem is one message of a conversation, as gloda indexed it.
+type ThreadItem = gloda.ConvMsg
+
+// Conversation lists the conversation of the message with Message-ID hdr,
+// oldest first, from gloda (milliseconds; no Thunderbird calls). Nil when the
+// message is not indexed yet.
+func (c *Client) Conversation(ctx context.Context, hdr string) ([]ThreadItem, error) {
+	db, err := c.glodaPath()
+	if err != nil {
+		return nil, err
+	}
+	return gloda.Conversation(ctx, db, hdr)
+}
+
+// ThreadMessages resolves a conversation's items to messages, passing batches
+// (newest first within a batch) to emit, which returns false to stop.
+func (c *Client) ThreadMessages(ctx context.Context, items []ThreadItem, emit func([]Message) bool) error {
+	hits := make([]gloda.Hit, len(items))
+	for i, it := range items {
+		hits[len(items)-1-i] = it.Hit // newest first, like the lists
+	}
+	_, err := c.resolveHits(ctx, hits, SearchOpts{IncludeJunk: true}, len(hits), emit)
+	return err
+}
+
+// resolveHits turns gloda hits into add-on messages, in batches passed to
+// emit, until limit messages passed o's filters. stopped reports that it
+// ended early: limit reached or emit returned false. Resolving a hit costs
+// Thunderbird a scan of its folder (~40 ms for 28k messages) once the
+// account is known (learned from earlier hits in the same gloda folder), one
+// per account with that folder path before.
+func (c *Client) resolveHits(ctx context.Context, hits []gloda.Hit, o SearchOpts, limit int, emit func([]Message) bool) (stopped bool, err error) {
 	if len(hits) == 0 {
 		return false, nil
 	}
@@ -529,7 +572,7 @@ func (c *Client) FullText(ctx context.Context, query string, o SearchOpts, emit 
 			return true, nil
 		}
 	}
-	return len(hits) >= fetch, nil
+	return false, nil
 }
 
 // ParseDate reads s as RFC 3339, a YYYY-MM-DD date (local midnight), today,

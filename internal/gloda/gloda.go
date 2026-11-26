@@ -64,6 +64,74 @@ func Search(ctx context.Context, dbPath, query string, o Opts) ([]Hit, error) {
 	return hits, err
 }
 
+// ConvMsg is one message of a gloda conversation.
+type ConvMsg struct {
+	Hit
+	Author, Subject string
+}
+
+// Conversation returns the messages of the conversation (Thunderbird's own
+// threading) that headerMessageID belongs to, oldest first, one per
+// Message-ID. Nil when gloda has not indexed that message (yet).
+func Conversation(ctx context.Context, dbPath, headerMessageID string) ([]ConvMsg, error) {
+	ms, err := conversation(ctx, dbPath, headerMessageID)
+	if err != nil && retryable(err) && ctx.Err() == nil {
+		ms, err = conversation(ctx, dbPath, headerMessageID)
+	}
+	return ms, err
+}
+
+func conversation(ctx context.Context, dbPath, hdr string) ([]ConvMsg, error) {
+	db, err := open(dbPath)
+	if err != nil {
+		return nil, err
+	}
+	defer db.Close()
+	// shortcut: 200 messages per conversation, oldest dropped first; raise if huge threads matter
+	rows, err := db.QueryContext(ctx, `SELECT * FROM (
+		SELECT m.headerMessageID, f.folderURI, m.date, c.c3author, c.c1subject
+		FROM messages m
+		JOIN folderLocations f ON f.id = m.folderID
+		LEFT JOIN messagesText_content c ON c.docid = m.id
+		WHERE m.deleted = 0 AND m.conversationID IN (SELECT conversationID FROM messages WHERE headerMessageID = ? AND deleted = 0)
+		ORDER BY m.date DESC LIMIT 400) ORDER BY date`, strings.Trim(hdr, "<>"))
+	if err != nil {
+		return nil, fmt.Errorf("gloda conversation: %w", err)
+	}
+	defer rows.Close()
+	var out []ConvMsg
+	seen := map[string]bool{} // Gmail keeps copies in several folders
+	for rows.Next() {
+		var id, uri, author, subject sql.NullString
+		var date sql.NullInt64
+		if err := rows.Scan(&id, &uri, &date, &author, &subject); err != nil {
+			return nil, fmt.Errorf("gloda conversation: %w", err)
+		}
+		if seen[id.String] {
+			continue
+		}
+		seen[id.String] = true
+		out = append(out, ConvMsg{Hit{id.String, folderPath(uri.String), uri.String, time.UnixMicro(date.Int64)}, author.String, subject.String})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("gloda conversation: %w", err)
+	}
+	return out[max(0, len(out)-200):], nil
+}
+
+// open opens the database read-only. Per call: an immutable connection never
+// revalidates its page cache, so a pooled one would mix stale pages with
+// Thunderbird's later writes.
+func open(dbPath string) (*sql.DB, error) {
+	dsn := (&url.URL{Scheme: "file", Path: dbPath, RawQuery: "mode=ro&immutable=1"}).String()
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		return nil, err
+	}
+	db.SetMaxOpenConns(1)
+	return db, nil
+}
+
 func retryable(err error) bool {
 	var se *sqlite.Error
 	if errors.As(err, &se) {
@@ -81,15 +149,11 @@ func search(ctx context.Context, dbPath, query string, o Opts) ([]Hit, error) {
 	if len(words) == 0 {
 		return nil, nil
 	}
-	// Open per call: an immutable connection never revalidates its page cache,
-	// so a pooled one would mix stale pages with Thunderbird's later writes.
-	dsn := (&url.URL{Scheme: "file", Path: dbPath, RawQuery: "mode=ro&immutable=1"}).String()
-	db, err := sql.Open("sqlite", dsn)
+	db, err := open(dbPath)
 	if err != nil {
 		return nil, err
 	}
 	defer db.Close()
-	db.SetMaxOpenConns(1)
 
 	q, args := buildQuery(words, o)
 	rows, err := db.QueryContext(ctx, q, args...)

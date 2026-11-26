@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"testing"
 	"time"
 )
@@ -142,5 +143,38 @@ func TestRealDB(t *testing.T) {
 			t.Fatal(err)
 		}
 		t.Logf("%-16q %4d hits in %v", q, len(hs), time.Since(start))
+	}
+}
+
+func TestConversation(t *testing.T) {
+	path := fixture(t)
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// m1 (conversation 1) gets a reply in two folders (a Gmail copy) and a deleted one.
+	for _, q := range []string{
+		`INSERT INTO messages (id, folderID, messageKey, conversationID, date, headerMessageID, deleted) VALUES (10, 1, 10, 1, ` + strconv.FormatInt(base.Add(time.Hour).UnixMicro(), 10) + `, 'r1@x', 0)`,
+		`INSERT INTO messages (id, folderID, messageKey, conversationID, date, headerMessageID, deleted) VALUES (11, 2, 11, 1, ` + strconv.FormatInt(base.Add(time.Hour).UnixMicro(), 10) + `, 'r1@x', 0)`,
+		`INSERT INTO messages (id, folderID, messageKey, conversationID, date, headerMessageID, deleted) VALUES (12, 1, 12, 1, ` + strconv.FormatInt(base.Add(2*time.Hour).UnixMicro(), 10) + `, 'gone@x', 1)`,
+		`INSERT INTO messagesText_content VALUES (10, 'ok', 'Re: Invoice', NULL, 'Kari <k@x>', 'shop@x')`,
+	} {
+		if _, err := db.Exec(q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	db.Close()
+	got, err := Conversation(t.Context(), path, "<r1@x>")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0].HeaderMessageID != "m1@x" || got[1].HeaderMessageID != "r1@x" {
+		t.Fatalf("want [m1 r1] oldest first, one per Message-ID, deleted left out; got %+v", got)
+	}
+	if got[1].Author != "Kari <k@x>" || got[1].Subject != "Re: Invoice" || got[1].FolderPath != "/INBOX" {
+		t.Fatalf("details %+v", got[1])
+	}
+	if none, err := Conversation(t.Context(), path, "unknown@x"); err != nil || none != nil {
+		t.Fatalf("unindexed message: %v %v", none, err)
 	}
 }

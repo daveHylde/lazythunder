@@ -126,8 +126,8 @@ func (m Model) sidebarLines(w, h int) ([]string, *sixelReq) {
 		return out
 	}
 
-	// action items (the summary itself sits at the top of the message)
-	var top []string
+	// the conversation, then action items (the summary itself sits at the top of the message)
+	top := m.threadLines(w, min(threadBoxRows, max(3, h/3)), section) // leave room for the action items
 	sum := m.noteFor(x.HeaderMessageID).sum
 
 	// Action items (with the link that does them), then the other safe links

@@ -74,7 +74,10 @@ type Model struct {
 	tab       int
 	view      listView
 	prevView  listView // restored when leaving search results
-	unread    bool     // unread-only filter
+
+	thread    []tb.ThreadItem // conversation of the open message (threadHdr)
+	threadHdr string
+	unread    bool // unread-only filter
 
 	msgs    []tb.Message
 	mcur    int
@@ -139,6 +142,9 @@ type listView struct {
 	folderIDs []string // nil for search results
 	accountID string   // "" when merged across accounts
 	query     string
+	thread    []tb.ThreadItem // a conversation opened from the thread box
+	focus     string          // thread: Message-ID to put the cursor on once listed
+	back      *listView       // thread: the view it was opened from (esc returns there)
 }
 
 type confirmation struct {
@@ -290,6 +296,10 @@ func (m *Model) loadList(appendPage bool) tea.Cmd {
 	m.listSeq++
 	latestList.Store(int64(m.listSeq))
 	seq, unread, ctx, c := m.listSeq, m.unread, m.ctx, m.c
+	if m.view.thread != nil {
+		m.msgs, m.mcur = nil, 0
+		return m.loadThreadList(seq)
+	}
 	if m.view.folderIDs == nil {
 		q := m.view.query
 		m.msgs, m.mcur = nil, 0
@@ -501,7 +511,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmd := m.refreshPreview(true)
 		reply := m.maybeLoadReply()
 		att := m.startAttPreview(msg.m)
-		return m, tea.Batch(cmd, reply, att)
+		return m, tea.Batch(cmd, reply, att, m.loadThread())
+	case threadMsg:
+		if m.full == nil || m.full.HeaderMessageID != msg.hdr {
+			return m, nil
+		}
+		m.thread, m.threadHdr = msg.items, msg.hdr
+		return m, m.refreshPreview(false)
 	case sidebarAttMsg:
 		if m.full == nil || m.full.ID != msg.p.msgID {
 			return m, nil
@@ -815,6 +831,13 @@ func (m Model) searchResults(msg listMsg) (tea.Model, tea.Cmd) {
 			m.mcur = i
 		}
 	}
+	if f := m.view.focus; f != "" { // a thread view: the message picked in the thread box
+		for i, x := range m.msgs {
+			if sameMsgID(x.HeaderMessageID, f) {
+				m.mcur, m.view.focus = i, ""
+			}
+		}
+	}
 	m.loadMeta()
 	m.applyStoredReplies()
 	m.status = fmt.Sprintf("%d messages", len(m.msgs))
@@ -959,6 +982,9 @@ func (m Model) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if len(m.marked) > 0 {
 			m.marked, m.status = nil, "selection cleared"
 			return m, nil
+		}
+		if m.view.back != nil { // leave a thread view for where it was opened
+			return m.show(*m.view.back)
 		}
 		if m.view.folderIDs == nil && m.prevView.title != "" { // leave search results
 			return m.show(m.prevView)
@@ -1182,6 +1208,12 @@ func (m Model) keyMessageActions(s string, passthrough tea.Cmd) (tea.Model, tea.
 			return m, nil
 		}
 		return m.openLinkPicker()
+	case "t":
+		if m.full == nil || m.full.ID != x.ID {
+			m.status = "open the message first"
+			return m, nil
+		}
+		return m.openThreadPicker()
 	case "A":
 		if m.full == nil || m.full.ID != x.ID {
 			m.status = "open the message first"
@@ -1303,6 +1335,8 @@ func (m Model) askAgent(q string) (tea.Model, tea.Cmd) {
 func (m Model) viewContext() string {
 	var b strings.Builder
 	switch {
+	case m.view.thread != nil:
+		fmt.Fprintf(&b, "a conversation (%d messages): %s", len(m.view.thread), m.view.title)
 	case m.view.folderIDs == nil:
 		fmt.Fprintf(&b, "search results for %q", m.view.query)
 	default:

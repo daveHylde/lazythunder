@@ -28,14 +28,16 @@ type pickItem struct {
 	link          link
 	att           tb.Attachment
 	folder        tb.Folder
+	thread        tb.ThreadItem
 }
 
 type picker struct {
-	kind  string // "links", "attachments", "folders" or "move"
+	kind  string // "links", "thread", "attachments", "folders" or "move"
 	msgID int
 	items []pickItem
 	cur   int
-	num   string // digits typed so far (links: o3, o12)
+	num   string          // digits typed so far (links: o3, o12)
+	conv  []tb.ThreadItem // thread: the conversation listed
 }
 
 // linkNumTick opens the typed link number once no second digit follows.
@@ -165,15 +167,27 @@ func (m Model) keyPicker(s string) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	}
-	if p.kind == "links" {
+	if p.kind == "thread" {
+		if s == "enter" || s == "l" || s == "right" {
+			return m.openThreadItem(it.thread, p.conv)
+		}
+	}
+	if p.kind == "links" || p.kind == "thread" {
 		if len(s) == 1 && s[0] >= '0' && s[0] <= '9' && (p.num != "" || s != "0") {
 			p.num += s
 			n, _ := strconv.Atoi(p.num)
-			if n*10 > len(m.links) { // no longer number starts with these digits
+			highest := len(m.links)
+			if p.kind == "thread" {
+				highest = len(p.items)
+			}
+			if n*10 > highest { // no longer number starts with these digits
 				return m.openLinkNumber(p)
 			}
 			num := p.num
 			return m, tea.Tick(600*time.Millisecond, func(time.Time) tea.Msg { return linkNumTick{p, num} })
+		}
+		if p.kind == "thread" {
+			return m, nil
 		}
 		switch s {
 		case "enter", "o":
@@ -427,8 +441,15 @@ func (m Model) openLinkNumber(p *picker) (tea.Model, tea.Cmd) {
 	p.num = ""
 	for _, it := range p.items {
 		if it.n == n {
+			if p.kind == "thread" {
+				return m.openThreadItem(it.thread, p.conv)
+			}
 			return m.openLink(it.link)
 		}
+	}
+	if p.kind == "thread" {
+		m.status = fmt.Sprintf("no message %d in this thread", n)
+		return m, nil
 	}
 	m.status = fmt.Sprintf("no safe link [%d]", n)
 	return m, nil
@@ -441,7 +462,7 @@ func (m Model) pickerLines(w int) []string {
 	for i := from; i < to; i++ {
 		it := p.items[i]
 		n := i + 1
-		if p.kind == "links" {
+		if p.kind == "links" || p.kind == "thread" {
 			n = it.n
 		}
 		line := fmt.Sprintf("%3d  %s  %s", n, render.Sanitize(it.title), dim.Render(render.Sanitize(it.detail)))
@@ -457,6 +478,8 @@ func (m Model) pickerHelp() string {
 	switch m.picker.kind {
 	case "links":
 		return "number or enter opens · y copy · esc close"
+	case "thread":
+		return "number or enter opens · esc close"
 	case "folders":
 		return "enter open · esc close"
 	case "move":
@@ -466,5 +489,5 @@ func (m Model) pickerHelp() string {
 }
 
 func pickerTitle(kind string) string {
-	return map[string]string{"links": "Links", "attachments": "Attachments", "folders": "Folders", "move": "Move to…"}[kind]
+	return map[string]string{"links": "Links", "thread": "Thread", "attachments": "Attachments", "folders": "Folders", "move": "Move to…"}[kind]
 }
