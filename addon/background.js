@@ -235,6 +235,56 @@ const OPS = {
       await closeTab(tab.id); // headless: nobody can close a leftover compose window
     }
   },
+
+  // ─── Account management (experiments/accountsAdmin) ───
+
+  async accountDetails() {
+    return (await admin().details()).map(fromBackendAccount);
+  },
+
+  async findConfig(p) {
+    return fromBackendConfig(await adminCall(() => admin().findConfig(str(p.email, "email"))));
+  },
+
+  async createAccount(p) {
+    const params = {
+      name: str(p.name, "name"), email: str(p.email, "email"), password: p.password ?? "",
+      incoming: toBackendServer(p.incoming, "incoming", true), outgoing: toBackendServer(p.outgoing, "outgoing", true),
+    };
+    if (typeof params.password !== "string") throw invalid("password must be a string");
+    return fromBackendAccount(await adminCall(() => admin().createAccount(params)));
+  },
+
+  async deleteAccount(p) {
+    await adminCall(() => admin().deleteAccount(str(p.id, "id"), !!p.removeFiles));
+  },
+
+  async updateServer(p) {
+    const params = { account: str(p.account, "account") };
+    if (p.incoming) params.incoming = toBackendServer(p.incoming, "incoming", false);
+    if (p.outgoing) params.outgoing = toBackendServer(p.outgoing, "outgoing", false);
+    if (p.password !== undefined) {
+      if (typeof p.password !== "string") throw invalid("password must be a string");
+      params.password = p.password;
+    }
+    return fromBackendAccount(await adminCall(() => admin().updateServer(params)));
+  },
+
+  async createIdentity(p) {
+    return adminCall(() => admin().createIdentity({ ...identityFields(p), account: str(p.account, "account"), email: str(p.email, "email") }));
+  },
+
+  async updateIdentity(p) {
+    return adminCall(() => admin().updateIdentity({ ...identityFields(p), id: str(p.id, "id") }));
+  },
+
+  async deleteIdentity(p) {
+    await adminCall(() => admin().deleteIdentity(str(p.id, "id")));
+  },
+
+  async setDefaultIdentity(p) {
+    await adminCall(() => admin().setDefaultIdentity(str(p.account, "account"), str(p.identity, "identity")));
+  },
 };
 
 const FLAGS = {
@@ -283,6 +333,101 @@ function listen() {
   api.messages.onMoved.addListener((from, to) => { changedFor(from); changedFor(to); });
   api.messages.onDeleted.addListener((list) => changedFor(list));
   api.folders.onFolderInfoChanged.addListener((folder) => changed(folder ? folderId(folder) : ""));
+  for (const ns of [api.accounts, api.identities]) {
+    for (const ev of ["onCreated", "onDeleted", "onUpdated"]) ns?.[ev]?.addListener(() => accountsChanged());
+  }
+}
+
+let accountsTimer = null;
+/** Emit accountsChanged at most once per CHANGED_DEBOUNCE_MS, trailing. */
+function accountsChanged() {
+  if (accountsTimer) return;
+  accountsTimer = setTimeout(() => { accountsTimer = null; emit("accountsChanged", {}); }, CHANGED_DEBOUNCE_MS);
+}
+
+// ─── Account mapping ────────────────────────────────────────────────
+
+// Thunderbird's nsMsgSocketType / nsMsgAuthMethod values.
+// Every value has a name, so a server's settings survive a read-edit-write unchanged.
+const SOCKET = { plain: 0, "starttls-optional": 1, starttls: 2, tls: 3 };
+const SOCKET_NAMES = Object.fromEntries(Object.entries(SOCKET).map(([k, v]) => [v, k]));
+const AUTH = {
+  default: 0, none: 1, old: 2, "password-cleartext": 3, "password-encrypted": 4, gssapi: 5, ntlm: 6, external: 7,
+  secure: 8, any: 9, oauth2: 10,
+};
+const AUTH_NAMES = Object.fromEntries(Object.entries(AUTH).map(([k, v]) => [v, k]));
+const SERVER_TYPES = { incoming: ["imap", "pop3"], outgoing: ["smtp"] };
+
+function admin() {
+  if (!api.accountsAdmin) throw codeErr("THUNDERBIRD_ERROR", "account management API is not available");
+  return api.accountsAdmin;
+}
+
+/** Runs an experiment call, turning its "CODE: message" errors into coded errors. */
+async function adminCall(fn) {
+  try {
+    return await fn();
+  } catch (e) {
+    const m = /^([A-Z_]+): ([\s\S]*)$/.exec(e?.message || "");
+    if (m) throw codeErr(m[1], m[2]);
+    throw e;
+  }
+}
+
+/** Protocol Server → backend fields. full requires every field (new account); else only given ones. */
+function toBackendServer(s, side, full) {
+  if (!s || typeof s !== "object") throw invalid(`${side} must be an object`);
+  const out = {};
+  if (s.type !== undefined || full) {
+    if (!SERVER_TYPES[side].includes(s.type)) throw invalid(`${side}.type must be one of ${SERVER_TYPES[side].join(", ")}`);
+    out.type = s.type;
+  }
+  if (s.hostname !== undefined || full) out.hostname = str(s.hostname, `${side}.hostname`);
+  if (s.port !== undefined || full) {
+    if (!Number.isInteger(s.port) || s.port < 1 || s.port > 65535) throw invalid(`${side}.port must be 1-65535`);
+    out.port = s.port;
+  }
+  if (s.socketType !== undefined || full) {
+    if (!Object.hasOwn(SOCKET, s.socketType)) throw invalid(`${side}.socketType must be one of ${Object.keys(SOCKET).join(", ")}`);
+    out.socketType = SOCKET[s.socketType];
+  }
+  if (s.auth !== undefined || full) {
+    if (!Object.hasOwn(AUTH, s.auth)) throw invalid(`${side}.auth must be one of ${Object.keys(AUTH).join(", ")}`);
+    out.auth = AUTH[s.auth];
+  }
+  if (s.username !== undefined) {
+    if (typeof s.username !== "string") throw invalid(`${side}.username must be a string`);
+    out.username = s.username;
+  }
+  return out;
+}
+
+function fromBackendServer(s) {
+  if (!s) return null;
+  return {
+    type: s.type, hostname: s.hostname, port: s.port,
+    socketType: SOCKET_NAMES[s.socketType] ?? String(s.socketType), auth: AUTH_NAMES[s.auth] ?? String(s.auth),
+    username: s.username || "",
+  };
+}
+
+function fromBackendAccount(a) {
+  return { ...a, incoming: fromBackendServer(a.incoming), outgoing: fromBackendServer(a.outgoing) };
+}
+
+function fromBackendConfig(c) {
+  return { incoming: fromBackendServer(c.incoming), outgoing: fromBackendServer(c.outgoing), source: c.source };
+}
+
+function identityFields(p) {
+  const out = {};
+  for (const k of ["email", "name", "replyTo", "organization", "signature"]) {
+    if (p[k] === undefined) continue;
+    if (typeof p[k] !== "string") throw invalid(`${k} must be a string`);
+    out[k] = p[k];
+  }
+  if (p.signatureIsHTML !== undefined) out.signatureIsHTML = !!p.signatureIsHTML;
+  return out;
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────
@@ -478,7 +623,7 @@ function drain() {
 }
 
 if (typeof module !== "undefined") {
-  module.exports = { handle, changed, formatMessage, extractParts, headerBlock, buildThreadIds, normalizeSubject, setPort: (p) => { port = p; } };
+  module.exports = { handle, changed, toBackendServer, fromBackendServer, formatMessage, extractParts, headerBlock, buildThreadIds, normalizeSubject, setPort: (p) => { port = p; } };
 } else {
   listen();
   connect();

@@ -29,6 +29,11 @@ globalThis.messenger = {
     saveMessage: async (tab, o) => calls.push(["save", tab, o]),
   },
   tabs: { remove: async (tab) => calls.push(["remove", tab]) },
+  accountsAdmin: {
+    createAccount: async (p) => { calls.push(["createAccount", p]); return { id: "account9", incoming: { ...p.incoming, username: "u" }, outgoing: null, identities: [] }; },
+    deleteAccount: async () => { throw new Error("NOT_FOUND: no account account7"); },
+    findConfig: async () => ({ incoming: { type: "imap", hostname: "imap.x", port: 993, socketType: 3, auth: 10, username: "me@x" }, outgoing: { type: "smtp", hostname: "smtp.x", port: 587, socketType: 1, auth: 4, username: "me@x" }, source: "isp" }),
+  },
 };
 const bg = require("./background.js");
 
@@ -112,4 +117,28 @@ test("changed: leading emit, one trailing per window per folder", async () => {
   await new Promise((r) => setTimeout(r, 1100));
   assert.equal(sent.length, 3);
   assert.equal(sent[0].event, "changed");
+});
+
+test("account servers map protocol strings to Thunderbird enums and back", async () => {
+  calls.length = 0;
+  const server = (type, port) => ({ type, hostname: `${type}.x`, port, socketType: "tls", auth: "password-cleartext", username: "me" });
+  const r = await bg.handle({ id: 1, op: "createAccount", params: { name: "Me", email: "me@x", password: "pw", incoming: server("imap", 993), outgoing: server("smtp", 465) } });
+  assert.equal(r.ok, true, r.error);
+  const sent = calls[0][1];
+  assert.deepEqual([sent.incoming.socketType, sent.incoming.auth, sent.outgoing.type], [3, 3, "smtp"]);
+  assert.deepEqual([r.data.incoming.socketType, r.data.incoming.auth, r.data.outgoing], ["tls", "password-cleartext", null]);
+
+  const f = await bg.handle({ id: 2, op: "findConfig", params: { email: "me@x" } });
+  assert.deepEqual([f.data.incoming.auth, f.data.outgoing.socketType, f.data.outgoing.auth], ["oauth2", "starttls-optional", "password-encrypted"]);
+});
+
+test("account ops validate input and keep the experiment's error code", async () => {
+  const bad = await bg.handle({ id: 1, op: "createAccount", params: { name: "Me", email: "me@x", incoming: { type: "imap", hostname: "h", port: 70000, socketType: "tls", auth: "oauth2" }, outgoing: {} } });
+  assert.equal(bad.code, "INVALID_ARGS");
+  assert.match(bad.error, /incoming.port/);
+  const partial = bg.toBackendServer({ port: 143 }, "incoming", false);
+  assert.deepEqual(partial, { port: 143 });
+  assert.throws(() => bg.toBackendServer({ type: "smtp" }, "incoming", false), /incoming.type/);
+  const gone = await bg.handle({ id: 2, op: "deleteAccount", params: { id: "account7", removeFiles: true } });
+  assert.deepEqual([gone.code, gone.error], ["NOT_FOUND", "no account account7"]);
 });

@@ -223,6 +223,13 @@ func (m Model) viewDetail(w, h int) string {
 	if m.draft != nil && (m.mode == mDraft || m.mode == mConfirm) {
 		return panel("[2] "+kindName(m.draft.Kind), m.draftLines(w-2), w, h, true)
 	}
+	if m.accts != nil && m.draft == nil && (m.mode == mAccounts || m.mode == mConfirm) {
+		title := "[2] Accounts"
+		if m.accts.form != nil {
+			title = "[2] " + m.accts.form.title
+		}
+		return panel(title, m.acctLines(w-2, h-3), w, h, true)
+	}
 	if m.mode == mPicker && m.picker != nil {
 		title := fmt.Sprintf("[2] %s (%d) · %s", pickerTitle(m.picker.kind), len(m.picker.items), m.pickerHelp())
 		return panel(title, m.pickerLines(w-2), w, h, true)
@@ -442,6 +449,8 @@ func (m Model) viewBottom() string {
 		hint = m.pickerHelp()
 	case m.mode == mAttView:
 		hint = "j/k scroll · esc back"
+	case m.mode == mAccounts && m.accts != nil:
+		hint = m.acctHelp()
 	default:
 		hint = "l folders · r reply · space select · a archive · d delete · C all read · F5 refresh · : agent · ? help"
 	}
@@ -488,5 +497,8 @@ const helpText = `lazythunder — keys
                X  new conversation
 
  drafts        e edit in $EDITOR · enter save to Drafts · S send · x discard
+
+ accounts      ctrl+a  accounts screen: a add · e edit servers/identity · D remove (local copy only)
+               i add identity · x delete identity · * make identity default · esc close
 
  q quit · any key closes this help`

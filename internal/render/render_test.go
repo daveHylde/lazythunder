@@ -75,12 +75,22 @@ func TestBlockInsideLinkDoesNotPanic(t *testing.T) {
 	}
 }
 
+// Compares 4x the input against 1x instead of a wall-clock budget, which
+// flaked under -race on a loaded machine: quadratic work would take ~16x.
 func TestManyBreaksIsLinear(t *testing.T) {
-	src := "<p>" + strings.Repeat("line of text<br>", 20000) + "</p>"
-	start := time.Now()
-	HTML(src, Opts{Width: 80, Styled: true, Links: true})
-	if d := time.Since(start); d > 2*time.Second {
-		t.Fatalf("took %v", d)
+	run := func(n int) time.Duration {
+		src := "<p>" + strings.Repeat("line of text<br>", n) + "</p>"
+		best := time.Duration(1 << 62)
+		for range 3 { // best of 3 filters out scheduler noise
+			start := time.Now()
+			HTML(src, Opts{Width: 80, Styled: true, Links: true})
+			best = min(best, time.Since(start))
+		}
+		return best
+	}
+	small, big := run(5000), run(20000)
+	if big > 8*small {
+		t.Fatalf("4x the breaks took %v vs %v (%.1fx): not linear", big, small, float64(big)/float64(small))
 	}
 }
 

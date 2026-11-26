@@ -19,9 +19,28 @@
     "messagesDelete",
     "compose",
     "compose.send",
-    "compose.save"
+    "compose.save",
+    "accountsIdentities"
   ],
   "background": {
-    "scripts": ["background.js"]
+    "scripts": [
+      "background.js"
+    ]
+  },
+  "experiment_apis": {
+    "accountsAdmin": {
+      "schema": "experiments/accountsAdmin/schema.json",
+      "parent": {
+        "scopes": [
+          "addon_parent"
+        ],
+        "paths": [
+          [
+            "accountsAdmin"
+          ]
+        ],
+        "script": "experiments/accountsAdmin/implementation.js"
+      }
+    }
   }
 }

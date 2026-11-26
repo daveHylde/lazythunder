@@ -121,10 +121,10 @@ func TestFolderRefreshUpdatesCountsKeepsView(t *testing.T) {
 	if !strings.Contains(tabs, "3 Home (7)") || !strings.Contains(tabs, "1 All inboxes (7)") || strings.Contains(tabs, "Work (") {
 		t.Fatalf("tab bar %q", tabs)
 	}
-	// Home lost its folders: the tab index stays in range.
+	// Home lost its folders (account removed): back to All inboxes instead of a dead view.
 	m, _ = update(m, foldersMsg{folders: testFolders(0, 0)[:3], accounts: testAccounts()})
-	if m.tab != 1 {
-		t.Fatalf("tab %d after an account vanished", m.tab)
+	if m.tab != 0 || m.view.title != "All inboxes" {
+		t.Fatalf("tab %d view %q after an account vanished", m.tab, m.view.title)
 	}
 	m, _ = update(m, foldersMsg{err: errors.New("folders failed")})
 	if m.err != "folders failed" {

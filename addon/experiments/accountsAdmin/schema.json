@@ -1,0 +1,109 @@
+[
+  {
+    "namespace": "accountsAdmin",
+    "functions": [
+      {
+        "name": "details",
+        "type": "function",
+        "async": true,
+        "parameters": []
+      },
+      {
+        "name": "findConfig",
+        "type": "function",
+        "async": true,
+        "parameters": [
+          {
+            "name": "email",
+            "type": "string"
+          }
+        ]
+      },
+      {
+        "name": "createAccount",
+        "type": "function",
+        "async": true,
+        "parameters": [
+          {
+            "name": "params",
+            "type": "any"
+          }
+        ]
+      },
+      {
+        "name": "deleteAccount",
+        "type": "function",
+        "async": true,
+        "parameters": [
+          {
+            "name": "id",
+            "type": "string"
+          },
+          {
+            "name": "removeFiles",
+            "type": "boolean"
+          }
+        ]
+      },
+      {
+        "name": "updateServer",
+        "type": "function",
+        "async": true,
+        "parameters": [
+          {
+            "name": "params",
+            "type": "any"
+          }
+        ]
+      },
+      {
+        "name": "createIdentity",
+        "type": "function",
+        "async": true,
+        "parameters": [
+          {
+            "name": "params",
+            "type": "any"
+          }
+        ]
+      },
+      {
+        "name": "updateIdentity",
+        "type": "function",
+        "async": true,
+        "parameters": [
+          {
+            "name": "params",
+            "type": "any"
+          }
+        ]
+      },
+      {
+        "name": "deleteIdentity",
+        "type": "function",
+        "async": true,
+        "parameters": [
+          {
+            "name": "id",
+            "type": "string"
+          }
+        ]
+      },
+      {
+        "name": "setDefaultIdentity",
+        "type": "function",
+        "async": true,
+        "parameters": [
+          {
+            "name": "accountId",
+            "type": "string"
+          },
+          {
+            "name": "identityId",
+            "type": "string"
+          }
+        ]
+      }
+    ]
+  }
+]

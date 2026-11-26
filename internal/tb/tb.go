@@ -36,6 +36,8 @@ type Client struct {
 
 	folderOf sync.Map // gloda folder URI → add-on folder id, learned by FullText
 
+	openWindow func(context.Context, func(string)) error // nil: OpenWindow; tests stub it
+
 	mu   sync.Mutex
 	conn *conn
 	next int64
@@ -129,10 +131,13 @@ func (c *Client) dial(ctx context.Context) (*conn, error) {
 
 // callTimeout bounds one request so a wedged add-on never hangs a caller.
 func callTimeout(op string) time.Duration {
-	if op == "markFolderRead" { // one update per message: slow on big folders
+	switch op {
+	case "markFolderRead": // one update per message: slow on big folders
+		return 10 * time.Minute
+	case "createAccount": // the user may be signing in (OAuth) meanwhile
 		return 10 * time.Minute
 	}
-	return 2 * time.Minute
+	return 2 * time.Minute // also covers findConfig (~30 s when it has to guess)
 }
 
 // call sends op with params and decodes the response data into out (if non-nil).

@@ -155,6 +155,7 @@ Press `?` in the app for the full list.
 | **Clean up** | `U` unsubscribe and trash |
 | **AI** | `:` ask · `z` summarize message or thread · `W` write a reply · `X` new chat · `esc` cancel / back to the email |
 | **Drafts** | `e` edit in `$EDITOR` · `enter` save to Drafts · `S` send · `x` discard |
+| **Accounts** | `ctrl+a` accounts screen · `a` add · `e` edit servers or identity · `D` remove (local copy only, server untouched) · `i` add identity · `x` delete identity · `*` default identity |
 
 Resting on a message for a second marks it read and moves its summary to the front of the queue.
 

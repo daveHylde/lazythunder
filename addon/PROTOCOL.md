@@ -50,9 +50,33 @@ Message ids are Thunderbird MailExtension message ids (ints).
 | `delete` | `ids` (to trash) | – |
 | `submit` | `kind`: new/reply/replyAll/forward, `replyTo` (id), `from` (identity email), `to`, `cc`, `subject`, `body` (plain text), `send` (bool; false saves a draft) | – |
 
+## Account management
+
+These ops use a privileged Experiment API (`addon/experiments/accountsAdmin/`), which
+reuses Thunderbird's own account-setup modules (`resource:///modules/accountcreation/*`)
+and `MailServices.accounts`. Identity ops use the standard `identities`/`accounts` APIs.
+
+Shapes:
+- `Server`: `{"type": "imap"|"pop3"|"smtp", "hostname", "port": int, "socketType": "plain"|"starttls-optional"|"starttls"|"tls", "auth": "default"|"none"|"old"|"password-cleartext"|"password-encrypted"|"gssapi"|"ntlm"|"external"|"secure"|"any"|"oauth2", "username"}`
+- `IdentityFull`: `{"id", "accountId", "email", "name", "replyTo", "organization", "signature", "signatureIsHTML": bool, "default": bool}`
+- `AccountDetails`: `{"id", "name", "type", "incoming": Server, "outgoing": Server|null, "identities": [IdentityFull]}` (outgoing is the default identity's SMTP server)
+
+| op | params | data |
+|---|---|---|
+| `accountDetails` | – | `[AccountDetails]`, every mail account (not Local Folders) |
+| `findConfig` | `email` | `{"incoming": Server, "outgoing": Server, "source": "isp"\|"autoconfig"\|"exchange"\|"guess"}`; `NOT_FOUND` when nothing was found. Can take up to 45 s |
+| `createAccount` | `name` (real name), `email`, `password` (empty for oauth2), `incoming`: Server, `outgoing`: Server | `AccountDetails`. Verifies the login first (`LOGIN_FAILED` with Thunderbird's message on failure, `ALREADY_EXISTS` if the incoming server exists). With `auth: oauth2` and no Thunderbird window open, fails at once with `NEEDS_WINDOW` (the sign-in page needs one); the client opens the window and retries. May take minutes while the user signs in |
+| `deleteAccount` | `id`, `removeFiles` (bool: also delete its local mail store) | – |
+| `updateServer` | `account` (id), `incoming`: partial Server, `outgoing`: partial Server, `password` (optional; stored in Thunderbird's password manager for the incoming and, if it uses a password, the outgoing server) | `AccountDetails` |
+| `createIdentity` | `account`, `email`, `name`, `replyTo`, `organization`, `signature`, `signatureIsHTML` | `IdentityFull` |
+| `updateIdentity` | `id`, any of the IdentityFull fields above | `IdentityFull` |
+| `deleteIdentity` | `id` (not the account's last identity) | – |
+| `setDefaultIdentity` | `account`, `identity` | – |
+
 ## Events
 
 | event | data |
 |---|---|
 | `newMail` | `{"folder": "<folder id>", "messages": [Message]}` |
 | `changed` | `{"folder": "<folder id or empty>"}`: flags, moves, deletes, folder counts |
+| `accountsChanged` | `{}`: an account or identity was created, deleted or updated |

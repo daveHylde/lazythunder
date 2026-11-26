@@ -35,12 +35,13 @@ const (
 type mode int
 
 const (
-	mNormal  mode = iota
-	mInput        // text input at the bottom (search or agent prompt)
-	mConfirm      // y/n question
-	mDraft        // reviewing a draft
-	mPicker       // link or attachment picker in the detail pane
-	mAttView      // previewing an attachment in the detail pane
+	mNormal   mode = iota
+	mInput         // text input at the bottom (search or agent prompt)
+	mConfirm       // y/n question
+	mDraft         // reviewing a draft
+	mPicker        // link or attachment picker in the detail pane
+	mAttView       // previewing an attachment in the detail pane
+	mAccounts      // the accounts screen (ctrl+a)
 	mHelp
 )
 
@@ -107,6 +108,7 @@ type Model struct {
 	replyLoading int
 
 	picker     *picker
+	accts      *acctScreen // open accounts screen
 	attVP      viewport.Model
 	attTitle   string
 	previewSeq int
@@ -341,6 +343,9 @@ func (m Model) selected() (tb.Message, bool) {
 // ---- update ----
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if mm, cmd, ok := m.acctUpdate(msg); ok {
+		return mm, cmd
+	}
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.w, m.h = msg.Width, msg.Height
@@ -388,6 +393,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return mm, tea.Batch(cmd, mm.(Model).pollNewMail(false), m.subscribe())
 		}
 		m.tab = min(m.tab, len(m.acctOrder))
+		if m.viewGone() { // e.g. its account was removed: show the remaining mail instead of an error
+			return m.openTab(0)
+		}
 		return m, nil
 	case unsubOptsMsg:
 		if x, ok := m.selected(); !ok || x.ID != msg.msg.ID || m.mode != mNormal {
@@ -542,6 +550,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Batch(waitEvent(msg.ch), m.pollNewMail(true))
 		case "changed": // flags, moves, counts
 			return m, tea.Batch(waitEvent(msg.ch), m.loadFolders())
+		case "accountsChanged": // tabs, and the accounts screen if open
+			return m, tea.Batch(waitEvent(msg.ch), m.loadFolders(), m.loadAccounts())
 		}
 		return m, waitEvent(msg.ch)
 	case newMailMsg:
@@ -847,6 +857,8 @@ func (m Model) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.keyDraft(s)
 	case mPicker:
 		return m.keyPicker(s)
+	case mAccounts:
+		return m.keyAccounts(k)
 	case mAttView:
 		switch s {
 		case "esc", "q", "h", "left":
@@ -886,6 +898,8 @@ func (m Model) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "l":
 		return m.openFolderPicker()
+	case "ctrl+a":
+		return m.openAccounts()
 	case "v":
 		m.sidebar = !m.sidebar
 		m.layout()
@@ -1324,6 +1338,8 @@ func (m Model) modeAfterConfirm() mode {
 		return mDraft // confirmations raised from the draft screen return to it
 	case m.picker != nil:
 		return mPicker
+	case m.accts != nil:
+		return mAccounts
 	}
 	return mNormal
 }
@@ -1338,7 +1354,8 @@ func (m Model) closeDraft() Model {
 	if m.draftFile != "" {
 		os.Remove(m.draftFile)
 	}
-	m.draft, m.draftFile, m.mode = nil, "", mNormal
+	m.draft, m.draftFile = nil, ""
+	m.mode = m.modeAfterConfirm() // back to a picker or the accounts screen it opened over
 	if p := m.pending; p != nil {
 		m.pending = nil
 		return m.openDraft(*p)
