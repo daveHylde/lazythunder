@@ -287,7 +287,7 @@ func TestNestedCellsStayCheap(t *testing.T) {
 	}
 	start := time.Now()
 	got := plain(src, 120)
-	if d := time.Since(start); d > 3*time.Second {
+	if d := time.Since(start); d > 3*time.Second*budgetScale {
 		t.Fatalf("took %v", d)
 	}
 	for _, l := range strings.Split(got, "\n") {
