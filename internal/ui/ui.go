@@ -1065,7 +1065,7 @@ func (m Model) keyMessageActions(s string, passthrough tea.Cmd) (tea.Model, tea.
 	case "a":
 		return m, m.act("archived "+count(len(ids)), ids, func() error { return c.Archive(ctx, ids) })
 	case "d", "delete":
-		text := fmt.Sprintf("Move %q to trash?", x.Subject)
+		text := fmt.Sprintf("Move %q to trash?", m.msgs[idx[0]].Subject) // the target, not the cursor: space moves it on
 		if len(ids) > 1 {
 			text = fmt.Sprintf("Move %s to trash?", count(len(ids)))
 		}

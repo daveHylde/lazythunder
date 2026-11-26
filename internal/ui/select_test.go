@@ -31,3 +31,12 @@ func TestSelectionBulkRead(t *testing.T) {
 		t.Fatalf("after second m: %+v", m.msgs)
 	}
 }
+
+func TestDeletePromptNamesSelectedMessage(t *testing.T) {
+	m := Model{msgs: []tb.Message{{ID: 1, Subject: "picked"}, {ID: 2, Subject: "cursor"}}}
+	mm, _ := m.keyMessages(" ") // select 1; cursor moves to 2
+	mm, _ = mm.(Model).keyMessageActions("d", nil)
+	if got := mm.(Model).confirm.text; got != `Move "picked" to trash?` {
+		t.Fatalf("prompt = %q", got)
+	}
+}
