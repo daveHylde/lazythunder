@@ -328,8 +328,10 @@ func (m Model) asstShown() bool {
 	return m.asst.open && m.draft == nil && (m.mode == mAssistant || m.mode == mConfirm)
 }
 
-// summaryBlock is the AI summary shown under the message headers.
-func (m Model) summaryBlock(hdr string, w int) string {
+// summaryBlock is the AI summary shown under the message headers: ruled
+// across the pane (ruleW), its text wrapped at maxTextWidth.
+func (m Model) summaryBlock(hdr string, ruleW int) string {
+	w := min(ruleW, maxTextWidth)
 	if !m.ag.Enabled() || m.st == nil { // no store: no notes
 		return ""
 	}
@@ -347,7 +349,7 @@ func (m Model) summaryBlock(hdr string, w int) string {
 	default:
 		text = dim.Render("rest on the message for a summary")
 	}
-	rule := dim.Render(strings.Repeat("─", w)) + "\n" // its own section: ruled off from the headers and the body
+	rule := dim.Render(strings.Repeat("─", ruleW)) + "\n" // its own section: ruled off from the headers and the body
 	return rule + sideTitle.Render("✦ ") + strings.ReplaceAll(text, "\n", "\n  ") + "\n"
 }
 
@@ -362,7 +364,7 @@ func (m Model) renderMessage(x tb.FullMessage) (string, []string, []link) {
 	}
 	hdr := func(k, v string) {
 		if v != "" {
-			b.WriteString(ansi.Wrap(dim.Render(k+": ")+render.Sanitize(v), w, "") + "\n")
+			b.WriteString(ansi.Wrap(dim.Render(k+": ")+render.Sanitize(v), paneW, "") + "\n") // headers span the pane
 		}
 	}
 	hdr("From", x.Author)
@@ -372,8 +374,8 @@ func (m Model) renderMessage(x tb.FullMessage) (string, []string, []link) {
 	for _, a := range x.Parts.Attachments {
 		b.WriteString(dim.Render(fmt.Sprintf("📎 %s (%d KB)", render.Sanitize(a.Name), (a.Size+1023)/1024)) + "\n")
 	}
-	b.WriteString(m.summaryBlock(x.HeaderMessageID, w))
-	b.WriteString(dim.Render(strings.Repeat("─", w)) + "\n")
+	b.WriteString(m.summaryBlock(x.HeaderMessageID, paneW))
+	b.WriteString(dim.Render(strings.Repeat("─", paneW)) + "\n")
 	var misses []string
 	image := func(src string) (image.Image, string) {
 		img, fetch, token := m.images.lookup(x.ID, src)
