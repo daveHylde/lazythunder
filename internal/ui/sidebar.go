@@ -245,7 +245,7 @@ func (m Model) sidebarLines(w, h int) ([]string, *sixelReq) {
 }
 
 // thumbnail draws a registered image within w×rows: blank cells plus a sixel
-// request in sixel terminals, half-blocks elsewhere.
+// or kitty request in those terminals, half-blocks elsewhere.
 func (m Model) thumbnail(key string, w, rows int) ([]string, *sixelReq) {
 	img, token := m.images.registered(key)
 	if img == nil {
@@ -253,7 +253,7 @@ func (m Model) thumbnail(key string, w, rows int) ([]string, *sixelReq) {
 	}
 	b := img.Bounds()
 	cw, ch := m.cellW, m.cellH
-	if !m.inlineSixel() {
+	if !m.inlineSharp() {
 		return termimg.Blocks(img, w, rows), nil
 	}
 	lines := termimg.Blank(b.Dx(), b.Dy(), w, rows, cw, ch)
@@ -267,6 +267,16 @@ func (m Model) composeDetail(left []string, leftW int) []string {
 	sw := m.sidebarWidth()
 	side, thumb := m.sidebarLines(sw, len(left))
 	sep := dim.Render("│") + " "
+	if thumb != nil && termimg.Protocol() == "kitty" {
+		if id := m.images.kittyFor(*thumb, m.cellW, m.cellH); id != 0 {
+			for k := range thumb.n {
+				if i := thumb.p.Line + k; i < len(side) {
+					side[i] = termimg.KittyPlaceholder(id, k, thumb.p.Cols)
+				}
+			}
+		}
+		thumb = nil // placeholders are text: nothing to paint on top
+	}
 	out := make([]string, len(left))
 	for i := range left {
 		l := left[i]

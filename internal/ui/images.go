@@ -42,16 +42,24 @@ const (
 // imageStore caches decoded images per message and keeps the original files
 // for the hi-res viewer. Shared by all Model copies, so it is mutex-guarded.
 type imageStore struct {
-	mu      sync.Mutex
-	dir     string
-	imgs    map[string]image.Image
-	paths   map[string]string
-	state   map[string]imgState
-	order   map[int][]string // message id -> keys in document order
-	seen    map[int]map[string]bool
-	keyOf   map[string]string // placement token -> key
-	sixel   map[string]string // token|cols|rows|cell size|crop -> encoded sixel ("" while encoding)
-	noSixel map[string]bool   // keys whose sixel encode failed: shown as half-blocks
+	mu       sync.Mutex
+	dir      string
+	imgs     map[string]image.Image
+	paths    map[string]string
+	state    map[string]imgState
+	order    map[int][]string // message id -> keys in document order
+	seen     map[int]map[string]bool
+	keyOf    map[string]string   // placement token -> key
+	sixel    map[string]string   // token|cols|rows|cell size|crop -> encoded sixel ("" while encoding)
+	noSixel  map[string]bool     // keys whose sixel/kitty encode failed: shown as half-blocks
+	kitty    map[string]kittyImg // token|cols|rows|cell size -> image transmitted to the terminal
+	lastID   uint32              // last kitty image id handed out
+	kittyGen int                 // bumped when the kitty images are freed
+}
+
+type kittyImg struct {
+	id    uint32
+	ready bool // transmitted: placeholders may show it
 }
 
 // newImageStore returns nil (images disabled) if no temp dir can be made.
@@ -62,7 +70,7 @@ func newImageStore() *imageStore {
 	}
 	return &imageStore{dir: dir, imgs: map[string]image.Image{}, paths: map[string]string{},
 		state: map[string]imgState{}, order: map[int][]string{}, seen: map[int]map[string]bool{},
-		keyOf: map[string]string{}, sixel: map[string]string{}, noSixel: map[string]bool{}}
+		keyOf: map[string]string{}, sixel: map[string]string{}, noSixel: map[string]bool{}, kitty: map[string]kittyImg{}}
 }
 
 func (s *imageStore) close() {
@@ -136,8 +144,9 @@ func (s *imageStore) sixelFor(r sixelReq, cw, ch int) string {
 }
 
 type (
-	sixelMsg  struct{ failed bool } // failed: some image fell back to blocks, re-render
-	sixelTick struct{ offset int }  // scrolling paused here: encode what is visible
+	sixelMsg      struct{ failed bool } // failed: some image fell back to blocks, re-render
+	sixelTick     struct{ offset int }  // scrolling paused here: encode what is visible
+	viewerDoneMsg struct{ err error }   // the full-screen image viewer returned
 )
 
 // encodeSixels encodes the requests that have no cached sixel yet.
@@ -186,6 +195,140 @@ func encodeSixels(s *imageStore, reqs []sixelReq, cw, ch int) tea.Cmd {
 			s.mu.Unlock()
 		}
 		return sixelMsg{failed}
+	}
+}
+
+// kittyOut is the terminal. Images go to it straight from a tea.Cmd, each in a
+// single Write: bubbletea also flushes every frame in one Write to the same
+// *os.File, whose write lock keeps the two from interleaving, and an APC
+// doesn't move the cursor, so the renderer's idea of the screen stays right.
+// (Putting the APC in the frame instead can be lost: bubbletea only flushes
+// the latest frame, so it can't tell when the image actually went out.)
+var kittyOut io.Writer = os.Stdout
+
+func kittyKey(r sixelReq, cw, ch int) string {
+	return fmt.Sprintf("%s|%d|%d|%d|%d", r.p.Token, r.p.Cols, r.p.Rows, cw, ch)
+}
+
+// kittyFor returns the id of a request's transmitted image, 0 if not ready.
+func (s *imageStore) kittyFor(r sixelReq, cw, ch int) uint32 {
+	if s == nil {
+		return 0
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if k := s.kitty[kittyKey(r, cw, ch)]; k.ready {
+		return k.id
+	}
+	return 0
+}
+
+// transmitKitty sends the images of the requests that the terminal doesn't
+// have yet, whole (placeholders crop them), each under a new id.
+func transmitKitty(s *imageStore, reqs []sixelReq, cw, ch int) tea.Cmd {
+	if s == nil || len(reqs) == 0 {
+		return nil
+	}
+	type job struct {
+		key, path string
+		r         sixelReq
+		id        uint32
+	}
+	var jobs []job
+	var stale []uint32
+	s.mu.Lock()
+	if len(s.kitty) > 64 { // shortcut: crude bound on terminal-side image memory, like the sixel cache
+		keep := map[string]bool{}
+		for _, r := range reqs {
+			keep[kittyKey(r, cw, ch)] = true
+		}
+		for k, v := range s.kitty { // evict only images not on screen now
+			if !keep[k] {
+				stale = append(stale, v.id)
+				delete(s.kitty, k)
+			}
+		}
+	}
+	gen := s.kittyGen
+	for _, r := range reqs {
+		k := kittyKey(r, cw, ch)
+		if _, ok := s.kitty[k]; ok {
+			continue
+		}
+		if path := s.paths[s.keyOf[r.p.Token]]; path != "" {
+			s.lastID++
+			s.kitty[k] = kittyImg{id: s.lastID} // in progress
+			jobs = append(jobs, job{k, path, r, s.lastID})
+		}
+	}
+	s.mu.Unlock()
+	if len(jobs) == 0 && len(stale) == 0 {
+		return nil
+	}
+	return func() tea.Msg {
+		deleteKitty(stale)
+		failed := false
+		for _, j := range jobs {
+			enc := ""
+			if img, err := decode(j.path, j.r.p.Cols*cw); err == nil { // full resolution, not the thumbnail
+				enc = termimg.KittyTransmit(img, j.id, j.r.p.Cols, j.r.p.Rows, cw, ch)
+			}
+			if enc != "" {
+				io.WriteString(kittyOut, enc)
+			}
+			s.mu.Lock()
+			switch {
+			case s.kittyGen != gen: // freed meanwhile (message changed): drop it again
+				if enc != "" {
+					defer deleteKitty([]uint32{j.id})
+				}
+			case enc == "":
+				delete(s.kitty, j.key)
+				s.noSixel[s.keyOf[j.r.p.Token]] = true
+				failed = true
+			default:
+				s.kitty[j.key] = kittyImg{id: j.id, ready: true}
+			}
+			s.mu.Unlock()
+		}
+		return sixelMsg{failed}
+	}
+}
+
+// dropKitty forgets every kitty image and returns their ids for deleteKitty.
+// The caller holds s.mu.
+func (s *imageStore) dropKitty() []uint32 {
+	var ids []uint32
+	for _, k := range s.kitty {
+		ids = append(ids, k.id)
+	}
+	s.kitty = map[string]kittyImg{}
+	s.kittyGen++
+	return ids
+}
+
+// freeKitty forgets the transmitted images (e.g. another message opened) and
+// deletes them from the terminal.
+func (s *imageStore) freeKitty() tea.Cmd {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	ids := s.dropKitty()
+	s.mu.Unlock()
+	if len(ids) == 0 {
+		return nil
+	}
+	return func() tea.Msg { deleteKitty(ids); return nil }
+}
+
+func deleteKitty(ids []uint32) {
+	var b strings.Builder
+	for _, id := range ids {
+		b.WriteString(termimg.KittyDelete(id))
+	}
+	if b.Len() > 0 {
+		io.WriteString(kittyOut, b.String())
 	}
 }
 

@@ -13,6 +13,7 @@ import (
 	"github.com/daveHylde/lazythunder/internal/render"
 	"github.com/daveHylde/lazythunder/internal/store"
 	"github.com/daveHylde/lazythunder/internal/tb"
+	"github.com/daveHylde/lazythunder/internal/termimg"
 )
 
 // maxTextWidth caps email text (and the reply/draft text) for readability.
@@ -247,7 +248,7 @@ func (m Model) viewDetail(w, h int) string {
 	if x, ok := m.selected(); ok && (m.full == nil || m.full.ID != x.ID) && m.previewFailed != x.ID {
 		title = "[2] loading " + x.Subject + "…"
 	}
-	left := m.withSixel(strings.Split(m.preview.View(), "\n"))
+	left := m.withSharp(strings.Split(m.preview.View(), "\n"))
 	if m.sidebarOn() && m.full != nil {
 		left = m.composeDetail(left, m.preview.Width)
 	}
@@ -256,7 +257,7 @@ func (m Model) viewDetail(w, h int) string {
 
 // visibleSixels lists the on-screen part of every inline image in the preview.
 func (m Model) visibleSixels() []sixelReq {
-	if !m.inlineSixel() || m.full == nil {
+	if !m.inlineSharp() || m.full == nil {
 		return nil
 	}
 	top, h := m.preview.YOffset, m.preview.Height
@@ -268,6 +269,37 @@ func (m Model) visibleSixels() []sixelReq {
 		}
 	}
 	return out
+}
+
+// withSharp paints the sharp images into the preview lines.
+func (m Model) withSharp(lines []string) []string {
+	if termimg.Protocol() == "kitty" {
+		return m.withKitty(lines)
+	}
+	return m.withSixel(lines)
+}
+
+// withKitty swaps the blank cells the renderer left for each visible image
+// row for kitty placeholder cells of that image row: plain text to
+// bubbletea, so scrolling and cropping are just which rows are on screen.
+func (m Model) withKitty(lines []string) []string {
+	for _, r := range m.visibleSixels() {
+		id := m.images.kittyFor(r, m.cellW, m.cellH)
+		if id == 0 {
+			continue // not transmitted yet: blank briefly
+		}
+		for k := range r.n {
+			if i := r.row - r.n + 1 + k; i >= 0 && i < len(lines) {
+				lines[i] = placeCells(lines[i], r.p.Col, r.p.Cols, termimg.KittyPlaceholder(id, r.top+k, r.p.Cols))
+			}
+		}
+	}
+	return lines
+}
+
+// placeCells replaces cells [col, col+n) of line with cells.
+func placeCells(line string, col, n int, cells string) string {
+	return ansi.Truncate(line, col, "") + cells + ansi.TruncateLeft(line, col+n, "")
 }
 
 // withSixel paints sharp sixel images into the blank areas the renderer left
@@ -392,7 +424,7 @@ func (m Model) renderMessage(x tb.FullMessage) (string, []string, []link) {
 	}
 	b.WriteString(render.Body(x.Parts.Text, x.Parts.HTML, render.Opts{Width: w, Styled: true, Links: true, PreferHTML: true,
 		Image: image, CellW: cw, CellH: ch, ImageRows: max(3, m.preview.Height-1), ImageWidth: paneW,
-		BlankImages: m.inlineSixel(), SafeLink: bg.SafeLink, OnLink: onLink}))
+		BlankImages: m.inlineSharp(), SafeLink: bg.SafeLink, OnLink: onLink}))
 	return b.String(), misses, links
 }
 
@@ -488,7 +520,7 @@ const helpText = `lazythunder — keys
                r  reply   R  reply all   f  forward   (open compose mode, below)
                C  mark everything in the folder(s) read
                space  select in the list; m S a d M then act on all selected (esc clears)
-               i  view the message's images full screen (sixel/kitty)
+               i  view the message's images full screen (kitty/sixel/blocks)
                o  safe links (type n to open [n], enter open, y copy)
                t  the message's thread (type n to open message n, enter open)
                y  copy the message's code (login code, booking ref, voucher…; y+n when several)

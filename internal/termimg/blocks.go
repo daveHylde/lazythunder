@@ -1,6 +1,6 @@
 // Package termimg draws images in a terminal: as truecolor half-block text
-// (works everywhere, embeds in any text view) or as full-resolution sixel /
-// kitty graphics for a full-screen viewer.
+// (works everywhere, embeds in any text view), as kitty Unicode placeholders
+// or sixel inline, or full resolution in a full-screen viewer.
 package termimg
 
 import (

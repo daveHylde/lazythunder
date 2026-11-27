@@ -19,28 +19,20 @@ import (
 	"golang.org/x/image/bmp"
 )
 
-func TestProtocolFromEnv(t *testing.T) {
-	vars := []string{"LAZYTHUNDER_GRAPHICS", "KITTY_WINDOW_ID", "GHOSTTY_RESOURCES_DIR", "TERM", "TERM_PROGRAM"}
-	for _, tc := range []struct {
-		env  map[string]string
-		want string
-	}{
-		{map[string]string{}, "sixel"},
-		{map[string]string{"TERM": "foot"}, "sixel"},
-		{map[string]string{"TERM": "xterm-256color", "TERM_PROGRAM": "WezTerm"}, "sixel"},
-		{map[string]string{"TERM": "xterm-kitty"}, "kitty"},
-		{map[string]string{"KITTY_WINDOW_ID": "1"}, "kitty"},
-		{map[string]string{"GHOSTTY_RESOURCES_DIR": "/usr/share/ghostty"}, "kitty"},
-		{map[string]string{"TERM_PROGRAM": "ghostty"}, "kitty"},
-		{map[string]string{"LAZYTHUNDER_GRAPHICS": "sixel", "TERM": "xterm-kitty"}, "sixel"},
-		{map[string]string{"LAZYTHUNDER_GRAPHICS": "kitty", "TERM": "foot"}, "kitty"},
-	} {
-		for _, v := range vars {
-			t.Setenv(v, tc.env[v])
-		}
-		if got := Protocol(); got != tc.want {
-			t.Errorf("env %v: Protocol() = %q, want %q", tc.env, got, tc.want)
-		}
+func TestProtocolOverrideAndDefault(t *testing.T) {
+	defer func(d string) { detected = d }(detected)
+	t.Setenv("LAZYTHUNDER_GRAPHICS", "")
+	detected = ""
+	if got := Protocol(); got != "blocks" {
+		t.Errorf("undetected: %q", got)
+	}
+	detected = "kitty"
+	if got := Protocol(); got != "kitty" {
+		t.Errorf("detected kitty: %q", got)
+	}
+	t.Setenv("LAZYTHUNDER_GRAPHICS", "sixel")
+	if got := Protocol(); got != "sixel" {
+		t.Errorf("override: %q", got)
 	}
 }
 
@@ -249,6 +241,13 @@ func TestShowDrawsWithChosenProtocol(t *testing.T) {
 	show(&b, p, 0, 1)
 	if out := b.String(); !strings.Contains(out, "\x1bP") || strings.Contains(out, "\x1b_Ga=T") || !strings.Contains(out, "image 1/1") {
 		t.Errorf("sixel show: %q", out[:min(len(out), 80)])
+	}
+
+	t.Setenv("LAZYTHUNDER_GRAPHICS", "blocks")
+	b.Reset()
+	show(&b, p, 0, 1)
+	if out := b.String(); !strings.Contains(out, "▀") || strings.Contains(out, "\x1bP") || strings.Contains(out, "\x1b_Ga=T") {
+		t.Errorf("blocks show: %q", out[:min(len(out), 80)])
 	}
 
 	b.Reset()

@@ -5,14 +5,21 @@ import (
 	"context"
 	"encoding/binary"
 	"hash/crc32"
+	"image"
+	"image/png"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/daveHylde/lazythunder/internal/render"
 	"github.com/daveHylde/lazythunder/internal/tb"
+	"github.com/daveHylde/lazythunder/internal/termimg"
 )
 
 // bombPNG is a tiny file whose header claims 50000×50000 pixels.
@@ -57,6 +64,7 @@ func TestDownloadRefusesLocalhost(t *testing.T) {
 }
 
 func TestVisibleSixelsCrop(t *testing.T) {
+	t.Setenv("LAZYTHUNDER_GRAPHICS", "sixel")
 	m := Model{cellW: 10, cellH: 20, full: &tb.FullMessage{}}
 	m.preview.Height, m.preview.YOffset = 10, 5
 	m.placements = []render.Placement{
@@ -77,5 +85,64 @@ func TestVisibleSixelsCrop(t *testing.T) {
 		if got[k] != w {
 			t.Errorf("%s: got top,n,row %v want %v", k, got[k], w)
 		}
+	}
+}
+
+func TestKittyTransmitThenPlaceholders(t *testing.T) {
+	t.Setenv("LAZYTHUNDER_GRAPHICS", "kitty")
+	var out bytes.Buffer
+	defer func(w io.Writer) { kittyOut = w }(kittyOut)
+	kittyOut = &out
+	s := newImageStore()
+	defer s.close()
+	path := filepath.Join(s.dir, "pic")
+	f, _ := os.Create(path)
+	png.Encode(f, image.NewNRGBA(image.Rect(0, 0, 40, 60)))
+	f.Close()
+	if err := s.register("k", path); err != nil {
+		t.Fatal(err)
+	}
+	_, token := s.registered("k")
+
+	m := Model{cellW: 10, cellH: 20, full: &tb.FullMessage{}, images: s}
+	m.preview.Height, m.preview.YOffset = 4, 2
+	m.placements = []render.Placement{{Token: token, Line: 1, Col: 2, Cols: 4, Rows: 3}} // rows 1..3, row 1 scrolled away
+	blank := "ab" + strings.Repeat("\u2800", 4) + "cd"
+	lines := []string{blank, blank, "tail", ""}
+	if got := m.withKitty(append([]string(nil), lines...)); got[0] != blank {
+		t.Fatal("placeholders before the image was transmitted")
+	}
+	msg := m.encodeSharp(m.visibleSixels())()
+	if sm, ok := msg.(sixelMsg); !ok || sm.failed {
+		t.Fatalf("transmit: %#v", msg)
+	}
+	if !strings.Contains(out.String(), "a=T,f=100,q=2,U=1,i=1,c=4,r=3,") {
+		t.Fatalf("not transmitted: %q", out.String()[:min(60, out.Len())])
+	}
+	if m.encodeSharp(m.visibleSixels()) != nil {
+		t.Fatal("transmitted twice")
+	}
+	got := m.withKitty(append([]string(nil), lines...))
+	for i, row := range []int{1, 2} { // screen rows 0,1 are image rows 1,2
+		want := "ab" + termimg.KittyPlaceholder(1, row, 4) + "cd"
+		if got[i] != want {
+			t.Errorf("line %d: %q want %q", i, got[i], want)
+		}
+		if ansi.StringWidth(got[i]) != ansi.StringWidth(blank) {
+			t.Errorf("line %d width changed", i)
+		}
+	}
+	if got[2] != "tail" {
+		t.Fatal("row below the image changed")
+	}
+
+	out.Reset()
+	if cmd := s.freeKitty(); cmd == nil {
+		t.Fatal("nothing to free")
+	} else {
+		cmd()
+	}
+	if out.String() != termimg.KittyDelete(1) || m.images.kittyFor(m.visibleSixels()[0], 10, 20) != 0 {
+		t.Fatalf("free: %q", out.String())
 	}
 }

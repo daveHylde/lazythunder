@@ -2,32 +2,16 @@ package termimg
 
 import (
 	"bytes"
-	"encoding/base64"
 	"fmt"
 	"image"
-	"image/png"
 	"io"
 	"os"
-	"strings"
 
 	"github.com/mattn/go-sixel"
 	xdraw "golang.org/x/image/draw"
 	"golang.org/x/sys/unix"
 	"golang.org/x/term"
 )
-
-// Protocol picks the graphics protocol: LAZYTHUNDER_GRAPHICS overrides,
-// kitty/ghostty get the kitty protocol, everything else sixel (foot, wezterm, xterm).
-func Protocol() string {
-	if p := os.Getenv("LAZYTHUNDER_GRAPHICS"); p != "" {
-		return p
-	}
-	if os.Getenv("KITTY_WINDOW_ID") != "" || os.Getenv("GHOSTTY_RESOURCES_DIR") != "" ||
-		strings.Contains(os.Getenv("TERM"), "kitty") || os.Getenv("TERM_PROGRAM") == "ghostty" {
-		return "kitty"
-	}
-	return "sixel"
-}
 
 // View shows the image files full screen, one at a time, until q/esc.
 // It owns the terminal while running (called via tea.ExecProcess).
@@ -83,6 +67,10 @@ func show(out io.Writer, path string, i, n int) {
 	img, err := decodeFile(path)
 	if err != nil {
 		fmt.Fprintf(out, "cannot show %s: %v\r\n", path, err)
+	} else if Protocol() == "blocks" {
+		for _, l := range Blocks(img, cols, rows-2) {
+			fmt.Fprint(out, l+"\r\n")
+		}
 	} else {
 		cellH := pxH / max(1, rows)
 		w, h := fit(img.Bounds().Dx(), img.Bounds().Dy(), pxW, pxH-2*cellH)
@@ -104,24 +92,9 @@ func truncate(s string, n int) string {
 	return s
 }
 
-// kitty sends img as PNG in 4096-byte base64 chunks (kitty graphics protocol).
+// kitty sends img as PNG, displayed at the cursor (direct placement).
 func kitty(out io.Writer, img image.Image) {
-	var b bytes.Buffer
-	png.Encode(&b, img)
-	data := base64.StdEncoding.EncodeToString(b.Bytes())
-	for first := true; len(data) > 0; first = false {
-		chunk := data[:min(4096, len(data))]
-		data = data[len(chunk):]
-		more := 0
-		if len(data) > 0 {
-			more = 1
-		}
-		if first {
-			fmt.Fprintf(out, "\x1b_Ga=T,f=100,q=2,m=%d;%s\x1b\\", more, chunk)
-		} else {
-			fmt.Fprintf(out, "\x1b_Gm=%d;%s\x1b\\", more, chunk)
-		}
-	}
+	kittyChunks(out, "a=T,f=100,q=2", img)
 }
 
 func decodeFile(path string) (image.Image, error) {
@@ -143,14 +116,7 @@ func SixelCells(img image.Image, cols, rows, cellW, cellH, top, n int) string {
 	if w <= 0 || h <= 0 || top < 0 || n <= 0 || top+n > rows {
 		return ""
 	}
-	// keep the image's aspect inside the cell box; the rest stays transparent
-	iw, ih := img.Bounds().Dx(), img.Bounds().Dy()
-	fw, fh := w, ih*w/max(1, iw)
-	if fh > h {
-		fw, fh = iw*h/max(1, ih), h
-	}
-	dst := image.NewNRGBA(image.Rect(0, 0, w, h))
-	xdraw.CatmullRom.Scale(dst, image.Rect(0, 0, max(1, fw), max(1, fh)), img, img.Bounds(), xdraw.Src, nil)
+	dst := boxed(img, w, h) // aspect kept inside the cell box; the rest stays transparent
 	y0 := top * cellH
 	y1 := y0 + (n*cellH)/6*6
 	if y1 <= y0 {

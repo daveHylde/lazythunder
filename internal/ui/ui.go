@@ -232,8 +232,14 @@ func Run(c *tb.Client, ag *agent.Agent) error {
 			m.worker.Run(ctx, func() bool { return tbReady.Load() && daemonDown(st) })
 		}()
 	}
+	termimg.Detect(200 * time.Millisecond) // before bubbletea reads the terminal
 	prog = tea.NewProgram(m, tea.WithAltScreen())
 	final, err := prog.Run()
+	if m.images != nil {
+		m.images.mu.Lock()
+		deleteKitty(m.images.dropKitty()) // any left (e.g. killed by a signal): free the terminal's copies
+		m.images.mu.Unlock()
+	}
 	if fm, ok := final.(Model); ok && fm.asst.busy {
 		fm.setPause(false) // quit mid-chat: free the workers now, not in 10 minutes
 	}
@@ -512,9 +518,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.preview.GotoTop()
 			return m, nil
 		}
+		var free tea.Cmd
+		if m.full == nil || m.full.ID != msg.m.ID {
+			free = m.images.freeKitty() // the old message's images
+		}
 		m.full = &msg.m
 		m.loadNote()
-		cmd := m.refreshPreview(true)
+		cmd := tea.Batch(free, m.refreshPreview(true))
 		reply := m.maybeLoadReply()
 		att := m.startAttPreview(msg.m)
 		return m, tea.Batch(cmd, reply, att, m.loadThread())
@@ -530,9 +540,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		p := msg.p
 		m.attPrev = &p
-		if m.sidebarOn() && m.inlineSixel() {
+		if m.sidebarOn() && m.inlineSharp() {
 			if _, thumb := m.sidebarLines(m.sidebarWidth(), m.preview.Height); thumb != nil {
-				return m, encodeSixels(m.images, []sixelReq{*thumb}, m.cellW, m.cellH)
+				return m, m.encodeSharp([]sixelReq{*thumb})
 			}
 		}
 		return m, nil
@@ -599,7 +609,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.offset != m.preview.YOffset {
 			return m, nil // still scrolling
 		}
-		return m, encodeSixels(m.images, m.visibleSixels(), m.cellW, m.cellH)
+		return m, m.encodeSharp(m.visibleSixels())
+	case viewerDoneMsg:
+		if msg.err != nil {
+			m.err = "image viewer: " + msg.err.Error()
+		}
+		free := m.images.freeKitty() // the viewer cleared the terminal's images: send them again
+		return m, tea.Batch(free, m.refreshPreview(false))
 	case noteMsg:
 		if msg.err != nil {
 			m.err = msg.err.Error()
@@ -617,7 +633,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.err, m.status = "", ""
 		if msg.image != "" {
-			return m, tea.Exec(viewerCmd{[]string{msg.image}}, func(err error) tea.Msg { return noteMsg{"", err} })
+			return m, tea.Exec(viewerCmd{[]string{msg.image}}, func(err error) tea.Msg { return viewerDoneMsg{err} })
 		}
 		text := render.Text(msg.text, m.attVP.Width)
 		if msg.html {
@@ -673,7 +689,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m.openDraft(d), nil
 	case editedMsg:
-		return m.afterEdit(msg)
+		free := m.images.freeKitty() // the editor took the terminal: its images may be gone, send them again
+		mm, cmd := m.afterEdit(msg)
+		return mm, tea.Batch(free, cmd)
 	case sendingMsg:
 		m.submitting, m.status = true, "sending…"
 		return m, nil
@@ -726,14 +744,14 @@ func (m *Model) refreshPreview(top bool) tea.Cmd {
 		m.preview.SetYOffset(off)
 	}
 	var cmds []tea.Cmd
-	if m.inlineSixel() {
+	if m.inlineSharp() {
 		reqs := m.visibleSixels()
 		if m.sidebarOn() {
 			if _, thumb := m.sidebarLines(m.sidebarWidth(), m.preview.Height); thumb != nil {
 				reqs = append(reqs, *thumb) // resize/toggle changes its size: re-encode
 			}
 		}
-		cmds = append(cmds, encodeSixels(m.images, reqs, m.cellW, m.cellH))
+		cmds = append(cmds, m.encodeSharp(reqs))
 	}
 	if len(misses) > 0 {
 		cmds = append(cmds, fetchImages(m.ctx, m.c, m.images, m.full.ID, misses))
@@ -741,10 +759,24 @@ func (m *Model) refreshPreview(top bool) tea.Cmd {
 	return tea.Batch(cmds...)
 }
 
-// inlineSixel: draw sharp images in the preview (sixel terminals that report
-// their cell size). LAZYTHUNDER_GRAPHICS=blocks turns it off.
-func (m Model) inlineSixel() bool {
-	return termimg.Protocol() == "sixel" && m.cellW > 0 && m.cellH > 0
+// quit deletes the inline kitty images first, while still on their (alt) screen.
+func (m Model) quit() tea.Cmd {
+	return tea.Sequence(m.images.freeKitty(), tea.Quit)
+}
+
+// inlineSharp: draw sharp images in the preview (sixel or kitty terminals
+// that report their cell size). LAZYTHUNDER_GRAPHICS=blocks turns it off.
+func (m Model) inlineSharp() bool {
+	p := termimg.Protocol()
+	return (p == "sixel" || p == "kitty") && m.cellW > 0 && m.cellH > 0
+}
+
+// encodeSharp prepares the requests' sharp images: kitty transmits them, sixel encodes.
+func (m Model) encodeSharp(reqs []sixelReq) tea.Cmd {
+	if termimg.Protocol() == "kitty" {
+		return transmitKitty(m.images, reqs, m.cellW, m.cellH)
+	}
+	return encodeSixels(m.images, reqs, m.cellW, m.cellH)
 }
 
 // foldersOf lists an account's folders; "" lists every account's inbox.
@@ -863,7 +895,7 @@ func (m Model) show(v listView) (tea.Model, tea.Cmd) {
 func (m Model) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	s := k.String()
 	if s == "ctrl+c" {
-		return m, tea.Quit
+		return m, m.quit()
 	}
 	switch m.mode {
 	case mHelp:
@@ -897,7 +929,7 @@ func (m Model) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if !m.ready {
 		switch s {
 		case "q":
-			return m, tea.Quit
+			return m, m.quit()
 		case "f5":
 			m.err, m.status = "", "connecting to Thunderbird…"
 			return m, m.Init()
@@ -908,7 +940,7 @@ func (m Model) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// global keys
 	switch s {
 	case "q":
-		return m, tea.Quit
+		return m, m.quit()
 	case "?":
 		m.mode = mHelp
 		return m, nil
@@ -988,7 +1020,7 @@ func (m Model) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if s == "h" || s == "left" {
 			m.focus = pMessages
 		}
-		if m.preview.YOffset != before && m.inlineSixel() {
+		if m.preview.YOffset != before && m.inlineSharp() {
 			off := m.preview.YOffset // encode the newly visible image parts once scrolling pauses
 			cmd = tea.Batch(cmd, tea.Tick(120*time.Millisecond, func(time.Time) tea.Msg { return sixelTick{off} }))
 		}
@@ -1210,12 +1242,7 @@ func (m Model) keyMessageActions(s string, passthrough tea.Cmd) (tea.Model, tea.
 			m.status = "no images in this message"
 			return m, nil
 		}
-		return m, tea.Exec(viewerCmd{files}, func(err error) tea.Msg {
-			if err != nil {
-				return statusMsg("image viewer: " + err.Error())
-			}
-			return nil
-		})
+		return m, tea.Exec(viewerCmd{files}, func(err error) tea.Msg { return viewerDoneMsg{err} })
 	case "U":
 		return m.startUnsubscribe(x)
 	case "z":

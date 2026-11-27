@@ -43,8 +43,9 @@ gives you a fast, keyboard-only way to get through it all.
   across every account and all time, ignoring case. The first hits show within a second. Newest first.
 - **Real HTML in your terminal.** Bold, italics, headings, lists and quotes. Layout tables keep their
   columns side by side, small icons sit inline with the text, hidden preview text is dropped, and remote and embedded images show up inline: sharp
-  with sixel or kitty graphics, and as half-blocks in any other terminal. `i` opens them full
-  screen.
+  with kitty graphics or sixel (asked of the terminal at startup, so it also works inside a
+  multiplexer that passes kitty graphics through, like herdr), and as half-blocks in any other
+  terminal. `i` opens them full screen.
 - **A summary and a sidebar that tell you what matters.** A one-line AI summary under the
   headers, and a sidebar **Action items** list: action
   items tied to the link that does them, followed by every other safe link with a short title of
@@ -113,7 +114,7 @@ lazythunder over native messaging. Thunderbird 128 or newer is required.
 |---|---|
 | PDF previews | `pdftotext` (poppler) and `bwrap` (bubblewrap) |
 | Copying links with `y` | `wl-copy` (wl-clipboard, Wayland) |
-| Sharp images | a sixel or kitty-graphics terminal: foot, wezterm, kitty, ghostty |
+| Sharp images | a kitty-graphics or sixel terminal: kitty, ghostty, foot, wezterm |
 | AI features | any OpenAI-compatible endpoint, see below |
 
 lazythunder runs on Linux. Links and files open through `xdg-open`.
@@ -179,7 +180,7 @@ Everything is set with environment variables.
 | `LAZYTHUNDER_LLM_URL` | `http://127.0.0.1:8085/v1` | OpenAI-compatible base URL. `off` disables AI. |
 | `LAZYTHUNDER_MODEL` | (the server's default) | model name. Hosted providers need it. |
 | `LAZYTHUNDER_API_KEY` | (none) | sent as `Authorization: Bearer …` |
-| `LAZYTHUNDER_GRAPHICS` | auto | `kitty` or `sixel` to force an image protocol |
+| `LAZYTHUNDER_GRAPHICS` | auto (asks the terminal) | `kitty`, `sixel` or `blocks` (half-blocks) to force an image protocol |
 | `VISUAL` / `EDITOR` | `vi` | editor for drafts |
 
 | File | |
