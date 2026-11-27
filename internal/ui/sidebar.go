@@ -21,7 +21,7 @@ import (
 
 const (
 	sidebarMin    = 30 // free columns beside the text needed to show the sidebar
-	sidebarMax    = 70
+	sidebarMax    = 50
 	sidebarGap    = 3 // " │ "
 	autoPreviewMB = 15
 )

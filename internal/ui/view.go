@@ -44,7 +44,7 @@ func (m Model) listHeight() int { return max(1, m.topHeight()-3) }
 func (m *Model) layout() {
 	m.preview.Width, m.preview.Height = m.w-2, m.bottomHeight()-3
 	if m.sidebarOn() {
-		m.preview.Width = maxTextWidth // the sidebar takes the rest
+		m.preview.Width -= sidebarGap + m.sidebarWidth() // sidebar pinned right; text still wraps at maxTextWidth
 	}
 	m.attVP.Width, m.attVP.Height = m.w-2, m.bottomHeight()-3
 	m.input.Width = m.w - 4
