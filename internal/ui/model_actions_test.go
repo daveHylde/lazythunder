@@ -287,9 +287,9 @@ func TestNewMailStatus(t *testing.T) {
 		status  string
 		wantCmd bool
 	}{
-		{newMailMsg{n: 2, event: true}, "2 new message(s) · F5 to refresh", true},
+		{newMailMsg{n: 2, event: true}, "2 new message(s)", false}, // the event refreshed already
 		{newMailMsg{n: 0, event: true}, "4 messages", false},
-		{newMailMsg{n: 3}, "3 new message(s) · F5 to refresh", true},
+		{newMailMsg{n: 3}, "3 new message(s)", true},
 		{newMailMsg{n: 0}, "4 messages", true}, // the minute poll goes on
 	} {
 		m, cmd := update(loaded(t, nil), c.msg)
@@ -317,12 +317,28 @@ func TestMailEvents(t *testing.T) {
 		t.Fatalf("got %+v", ev)
 	}
 
-	// newMail re-arms the wait (no store: no poll pass)
+	// newMail re-arms the wait and refreshes folders and list (no store: no poll pass)
+	h.set("search", tb.Page{Messages: testInbox()})
 	ch <- tb.Event{Name: "something"}
 	_, cmd = update(m, ev)
-	ev = run(t, cmd).(mailEventMsg)
-	if ev.name != "something" {
-		t.Fatalf("got %+v", ev)
+	var got []string
+	for _, sub := range subCmds(t, run(t, cmd)) {
+		switch msg := run(t, sub).(type) {
+		case mailEventMsg:
+			ev = msg
+		case foldersMsg:
+			got = append(got, "folders")
+		case listMsg:
+			if !msg.refresh {
+				t.Fatalf("list %+v", msg)
+			}
+			got = append(got, "list")
+		default:
+			t.Fatalf("unexpected %T", msg)
+		}
+	}
+	if ev.name != "something" || strings.Join(got, ",") != "folders,list" {
+		t.Fatalf("got %+v %v", ev, got)
 	}
 	// unknown events just re-arm
 	ch <- tb.Event{Name: "changed"}

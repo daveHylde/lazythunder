@@ -177,7 +177,9 @@ type (
 		next   time.Time
 		more   bool
 		append bool
-		err    error
+		// refresh: new mail reloaded the first page in place; the cursor and older pages stay
+		refresh bool
+		err     error
 		// partial: a search batch with more to come
 		partial bool
 	}
@@ -334,6 +336,63 @@ func (m *Model) loadList(appendPage bool) tea.Cmd {
 	}
 }
 
+// refreshList reloads a folder view's first page for new mail, keeping the
+// cursor and the pages scrolled to; other views are left alone.
+func (m *Model) refreshList() tea.Cmd {
+	if m.view.folderIDs == nil || m.view.thread != nil || m.view.found != nil {
+		return nil
+	}
+	// the current seq: a list load started meanwhile wins, one in flight still lands
+	seq, ids, unread, ctx, c := m.listSeq, m.view.folderIDs, m.unread, m.ctx, m.c
+	return func() tea.Msg {
+		ms, next, more, err := c.RecentMerged(ctx, ids, time.Time{}, unread)
+		return listMsg{seq: seq, msgs: ms, next: next, more: more, refresh: true, err: err}
+	}
+}
+
+// mergeRefresh puts a refreshed first page in place of the list's newest part:
+// loaded messages older than the page stay, the cursor stays on its message.
+func (m Model) mergeRefresh(msg listMsg) (tea.Model, tea.Cmd) {
+	cur, hadCur := m.selected()
+	msgs := msg.msgs
+	if msg.more && m.before.Before(msg.next) { // older pages were loaded: keep them
+		have := map[int]bool{}
+		for _, x := range msgs {
+			have[x.ID] = true
+		}
+		for _, x := range m.msgs {
+			if !have[x.ID] && !x.Date.After(msg.next) {
+				msgs = append(msgs, x)
+			}
+		}
+	} else {
+		// hasMore stays false while a page request is in flight
+		m.hasMore, m.before = m.hasMore && msg.more, msg.next
+	}
+	m.msgs, m.mcur = msgs, min(m.mcur, max(len(msgs)-1, 0))
+	for i, x := range m.msgs {
+		if hadCur && x.ID == cur.ID {
+			m.mcur = i
+		}
+	}
+	if len(m.marked) > 0 {
+		kept := map[int]bool{}
+		for _, x := range m.msgs {
+			if m.marked[x.ID] {
+				kept[x.ID] = true
+			}
+		}
+		m.marked = kept
+	}
+	m.loadMeta()
+	m.applyStoredReplies()
+	status := m.loadReplyStatus(msg.msgs)
+	if now, ok := m.selected(); ok && hadCur && now.ID == cur.ID {
+		return m, status // same message: the preview stays as it is
+	}
+	return m, tea.Batch(m.schedulePreview(), status)
+}
+
 // schedulePreview debounces preview loads while the cursor moves.
 func (m *Model) schedulePreview() tea.Cmd {
 	m.previewSeq++
@@ -432,6 +491,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case listMsg:
 		if msg.seq != m.listSeq {
 			return m, nil
+		}
+		if msg.refresh {
+			if msg.err != nil || m.view.folderIDs == nil {
+				return m, nil // the next new mail or F5 tries again
+			}
+			return m.mergeRefresh(msg)
 		}
 		if m.view.folderIDs == nil {
 			if !msg.partial {
@@ -579,7 +644,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case mailEventMsg:
 		switch msg.name {
 		case "newMail":
-			return m, tea.Batch(waitEvent(msg.ch), m.pollNewMail(true))
+			// the list now: a running daemon may have polled this mail already, leaving the pass none
+			return m, tea.Batch(waitEvent(msg.ch), m.pollNewMail(true), m.loadFolders(), m.refreshList())
 		case "changed": // flags, moves, counts
 			return m, tea.Batch(waitEvent(msg.ch), m.loadFolders())
 		case "accountsChanged": // tabs, and the accounts screen if open
@@ -587,16 +653,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, waitEvent(msg.ch)
 	case newMailMsg:
+		if msg.n > 0 {
+			m.status = fmt.Sprintf("%d new message(s)", msg.n)
+		}
 		if msg.event {
-			if msg.n > 0 {
-				m.status = fmt.Sprintf("%d new message(s) · F5 to refresh", msg.n)
-				return m, m.loadFolders()
-			}
-			return m, nil
+			return m, nil // the event refreshed the list already
 		}
 		if msg.n > 0 {
-			m.status = fmt.Sprintf("%d new message(s) · F5 to refresh", msg.n)
-			return m, tea.Batch(m.loadFolders(), nextPoll())
+			return m, tea.Batch(m.loadFolders(), m.refreshList(), nextPoll())
 		}
 		return m, nextPoll()
 	case sixelMsg:

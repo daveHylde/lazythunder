@@ -2,9 +2,11 @@ package ui
 
 import (
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -398,5 +400,33 @@ func TestSearchErrorAndCancel(t *testing.T) {
 	m = press(t, m, "/", "enter")
 	if m.mode != mNormal || m.view.title != "All inboxes" {
 		t.Fatalf("empty search: mode %d view %q", m.mode, m.view.title)
+	}
+}
+
+func TestRefreshKeepsCursorAndOlderPages(t *testing.T) {
+	m := loaded(t, nil)
+	m = press(t, m, "j", "j") // on 3 Meeting
+	m.hasMore, m.before = false, t0.Add(-10*time.Hour)
+	m.msgs = append(m.msgs, testMsg(9, "a1", "Old", true, 20)) // a page scrolled to
+	seq := m.previewSeq
+
+	// new mail 5 on top; 4 moved away; the first page ends 5h back
+	page := []tb.Message{testMsg(5, "a1", "New", false, 0), testMsg(1, "a1", "Hello", true, 1),
+		testMsg(2, "a2", "Invoice", true, 2), testMsg(3, "a1", "Meeting", false, 3)}
+	m, cmd := update(m, listMsg{seq: m.listSeq, msgs: page, next: t0.Add(-5 * time.Hour), more: true, refresh: true})
+	if got := ids(m.msgs); fmt.Sprint(got) != "[5 1 2 3 9]" {
+		t.Fatalf("list %v", got)
+	}
+	if x, _ := m.selected(); x.ID != 3 || m.previewSeq != seq || !m.msgs[1].Read {
+		t.Fatalf("cursor on %d, previewSeq %d→%d, cmd %v", x.ID, seq, m.previewSeq, cmd != nil)
+	}
+	if m.hasMore || !m.before.Equal(t0.Add(-10*time.Hour)) {
+		t.Fatalf("paging changed: %v %v", m.hasMore, m.before)
+	}
+
+	// a refresh for another view (search opened meanwhile) or a failed one is dropped
+	m2, _ := update(m, listMsg{seq: m.listSeq, err: errors.New("down"), refresh: true})
+	if len(m2.msgs) != 5 || m2.err != "" {
+		t.Fatalf("failed refresh changed the list: %v %q", ids(m2.msgs), m2.err)
 	}
 }
