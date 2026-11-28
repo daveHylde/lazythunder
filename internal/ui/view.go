@@ -20,8 +20,11 @@ import (
 const maxTextWidth = 75
 
 var (
-	accent    = lipgloss.Color("4")
-	dim       = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+	// Palette slots 4 and 8 are near-background in many themes (blue is dark,
+	// "bright black" is often just above the background), so: bright cyan for
+	// accents and faint default foreground for secondary text.
+	accent    = lipgloss.Color("14")
+	dim       = lipgloss.NewStyle().Faint(true)
 	bold      = lipgloss.NewStyle().Bold(true)
 	titleSt   = lipgloss.NewStyle().Bold(true).Foreground(accent)
 	selFocus  = lipgloss.NewStyle().Reverse(true)
